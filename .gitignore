@@ -1,0 +1,5 @@
+# binaries
+/tui_client
+
+# debug logs written with -log
+*.log

@@ -1,0 +1,189 @@
+# Go OSCAR Client
+
+An OSCAR (AOL Instant Messenger) instant messaging client written in Go: a
+reusable client library and an interactive terminal client built on it.
+
+It speaks the OSCAR protocol used by classic AIM clients and is developed
+against [Open OSCAR Server](https://github.com/mk6i/open-oscar-server), whose
+`wire` package it uses for OSCAR wire formats. It also follows the sign-on
+handshake of real AIM 5.x clients, so it should work with other OSCAR servers
+too.
+
+It has also been tested to work on the [NINA.chat OSCAR server](https://nina.chat).
+
+## A.I. Disclaimer: This project was vibe coded
+
+This codebase was originally developed inside a fork of open-oscar-server for
+compatibility with that project's codebase, and this code is 100% vibe coded
+using Claude Code.
+
+The repository author ([@Kirsle on GitHub](https://github.com/kirsle)) generated
+this code to scratch his own itch, which is to support building a modern AIM
+chatbot written in Go. Kirsle has a long history in the instant messenger chatbot
+space, having authored many chatbots that ran on AOL Instant Messenger as well as
+MSN and Yahoo! Messengers in the early 2000's, and he also created the chatbot
+scripting language [RiveScript](https://www.rivescript.com) to drive those bots.
+
+In 2026, there was not an existing OSCAR client module for Go but there were
+open source OSCAR servers written in Go which provided the base inspiration for
+this project.
+
+OSCAR is an extremely old and outdated protocol, insecure by modern standards
+with MD5 hashing used in its authentication workflow. Kirsle did not want to
+learn the ins and outs of the OSCAR protocol the hard way to manually write a
+client library, so this one was A.I. generated.
+
+If you do not want to use an A.I. generated project, then do not use this one.
+If you have an interest in OSCAR clients, it would be greatly appreciated if
+you could contribute one to the [Open OSCAR Server](https://github.com/mk6i/open-oscar-server)
+and then I could label this repository as obsolete in favor of an upstream
+client library that could be used instead.
+
+## Screenshots
+
+This project includes a terminal TUI client program for OSCAR.
+
+The login screen allows you to set the server, screen name and password, which
+can optionally be remembered, and your settings are saved to disk with servers
+and screen names remembered.
+
+![The login screen](screenshots/login.png)
+
+HTML formatting for messages and profile pages works by translating the HTML
+tags into ANSI codes. It is possible to manually write HTML in your messages,
+or use the `/font` command to set your persistent font styles. Sequences that
+are not valid HTML within the subset of tags supported by AIM will be sent
+escaped, so sequences like `<3` still send correctly as part of your message.
+
+![Instant messages with HTML formatting support](screenshots/im.png)
+
+Type `/help` to see available commands:
+
+![The status screen and help menu](screenshots/help.png)
+
+## Terminal client
+
+```sh
+go run github.com/kirsle/go-oscar-client/cmd/tui_client@latest
+# or, from a checkout:
+go run ./cmd/tui_client
+```
+
+Run with no flags to get a sign-on screen. Fill in the server, screen name and
+password, or pick a saved screen name. To sign on straight away, pass all three
+on the command line:
+
+```sh
+go run ./cmd/tui_client -server 127.0.0.1:5190 -screenname alice -password secret
+```
+
+| Flag          | Description                                                           |
+|---------------|-----------------------------------------------------------------------|
+| `-server`     | OSCAR server address (`host:port`), default `127.0.0.1:5190`          |
+| `-screenname` | Screen name to sign on with                                           |
+| `-password`   | Password to sign on with                                              |
+| `-config`     | Config file path, default `<user config dir>/go-oscar-tui/config.json` |
+| `-plain`      | Strip HTML from messages instead of rendering it with terminal colors |
+| `-log`        | Write debug logs, including every SNAC sent and received, to a file    |
+
+### Features
+
+- Buddy list with groups, online/away/idle status and warning levels
+- Instant messages, with automatic replies while you're away
+- Chat rooms: join or create, invite, accept invitations, list users
+- View anyone's profile and away message; edit your own profile with a live
+  preview
+- Block and unblock users; warn users, normally or anonymously
+- HTML in messages and profiles rendered as terminal colors and styles
+- Write formatting HTML such as `<b>`, `<i>`, `<font color="red">` and
+  `<a href="...">` straight into your messages; anything else, like `<3`, is
+  sent as typed
+- A personal font style (color, background, face, size, bold, italic,
+  underline) applied to every message you send
+
+### Keys and commands
+
+| Key                       | Action                                    |
+|---------------------------|-------------------------------------------|
+| `Tab`                     | Switch between the buddy list and input   |
+| `Ctrl+N` / `Ctrl+P`       | Next / previous window                    |
+| `Ctrl+W`                  | Close the current window                  |
+| `PgUp` / `PgDn`           | Scroll the current window                 |
+| `Ctrl+C`                  | Sign off and quit                         |
+
+In the buddy list, `Enter` opens an IM, `i` shows info, `w`/`W` warns
+(normally/anonymously), `b` blocks or unblocks, and `d` removes a buddy.
+
+Type `/help` for every command. The main ones:
+
+```
+/im <name> [message]     /info [name]        /add <name> [group]   /remove <name>
+/block <name>            /unblock <name>     /blocks               /warn [name]
+/away [message]          /back               /profile              /font
+/join <room>             /invite <name>      /accept               /leave
+/signoff                 /quit
+```
+
+`/font` shows your message style. `/font help` lists the options, for example
+`/font color blue`, `/font bold`, `/font face Comic Sans MS`, `/font reset`.
+
+### Config file
+
+The client remembers each server and screen name you sign on with. For each
+account it saves your profile, last away message and font style, plus your
+password if you tick "Save password". The file is only readable by you, but a
+saved password is stored in plain text.
+
+## Library
+
+```go
+import "github.com/kirsle/go-oscar-client/client"
+
+c, err := client.Dial(ctx, client.Config{
+	Server:     "127.0.0.1:5190",
+	ScreenName: "alice",
+	Password:   "secret",
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer c.Close()
+
+if err := c.SendIM(ctx, "bob", "hello <b>bob</b>"); err != nil {
+	log.Print(err) // e.g. the user is offline
+}
+
+for ev := range c.Events() {
+	switch ev := ev.(type) {
+	case client.IMEvent:
+		fmt.Printf("%s: %s\n", ev.From.ScreenName, ev.Message)
+	case client.DisconnectedEvent:
+		log.Fatal(ev.Err)
+	}
+}
+```
+
+The `Client` handles sign-on with MD5 (BUCP) authentication, keeps the
+server-stored buddy list (feedbag) in sync, and reports activity as events:
+buddies arriving and leaving, IMs, warnings, chat invitations and messages, and
+disconnects. Its methods cover IMs, profiles, away messages, buddy list and
+block list changes, warnings and chat rooms; see the package documentation.
+
+`client/htmlterm` converts the HTML in AIM messages and profiles to ANSI-styled
+or plain text for terminals.
+
+## Development
+
+```sh
+go build ./...
+go test -race ./...
+gofmt -s -l . && go vet ./...
+```
+
+To test against a local server, run
+[Open OSCAR Server](https://github.com/mk6i/open-oscar-server) and point the
+client at `127.0.0.1:5190`.
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
