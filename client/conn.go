@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -121,16 +122,54 @@ type pendingReq struct {
 	reply     chan wire.SNACMessage
 }
 
-// dial opens a TCP connection to addr.
-func dial(ctx context.Context, addr string) (net.Conn, error) {
-	d := net.Dialer{Timeout: 15 * time.Second}
-	return d.DialContext(ctx, "tcp", addr)
+// ErrNotTLS indicates that the client connected with SSL to a server port that
+// doesn't speak TLS, typically a plaintext OSCAR port.
+var ErrNotTLS = errors.New("server did not answer with SSL; is this a plaintext port?")
+
+// ErrSSLUnavailable indicates that the client requires SSL but the server
+// referred it to a service that doesn't offer SSL.
+var ErrSSLUnavailable = errors.New("server does not offer SSL for this service")
+
+// dial opens a TCP connection to addr, secured with TLS unless tlsCfg is nil.
+// Without a ServerName in tlsCfg, the certificate is verified against the host
+// in addr.
+func dial(ctx context.Context, addr string, tlsCfg *tls.Config) (net.Conn, error) {
+	nd := &net.Dialer{Timeout: 15 * time.Second}
+	if tlsCfg == nil {
+		return nd.DialContext(ctx, "tcp", addr)
+	}
+	d := tls.Dialer{NetDialer: nd, Config: tlsCfg}
+	nc, err := d.DialContext(ctx, "tcp", addr)
+	if _, ok := errors.AsType[tls.RecordHeaderError](err); ok {
+		return nil, ErrNotTLS
+	}
+	return nc, err
+}
+
+// referralTLS returns the TLS config for connecting to a service that the
+// server referred the client to with block, a login or service response.
+// It returns nil, for plaintext, if base is nil. A client that requires SSL
+// never downgrades to plaintext: it fails with ErrSSLUnavailable if the
+// server says SSL isn't used for the service.
+func referralTLS(base *tls.Config, block wire.TLVRestBlock) (*tls.Config, error) {
+	if base == nil {
+		return nil, nil
+	}
+	if state, ok := block.Uint8(wire.OServiceTLVTagsSSLState); ok && state == wire.OServiceServiceResponseSSLStateNotUsed {
+		return nil, ErrSSLUnavailable
+	}
+	cfg := base.Clone()
+	if name, ok := block.String(wire.OServiceTLVTagsSSLCertName); ok && name != "" && cfg.ServerName == "" {
+		cfg.ServerName = name
+	}
+	return cfg, nil
 }
 
 // connectService connects to the OSCAR service at addr that loginCookie
-// grants access to and waits for the server to report the service online.
-func connectService(ctx context.Context, addr string, loginCookie []byte, logger *slog.Logger) (*conn, error) {
-	nc, err := dial(ctx, addr)
+// grants access to and waits for the server to report the service online. The
+// connection uses TLS unless tlsCfg is nil.
+func connectService(ctx context.Context, addr string, loginCookie []byte, tlsCfg *tls.Config, logger *slog.Logger) (*conn, error) {
+	nc, err := dial(ctx, addr, tlsCfg)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}

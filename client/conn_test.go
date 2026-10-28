@@ -3,8 +3,15 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"testing"
 	"time"
@@ -19,8 +26,18 @@ import (
 // service signon handshake and hands the server end to serve.
 func fakeService(t *testing.T, serve func(flapc *wire.FlapClient)) string {
 	t.Helper()
+	return fakeServiceTLS(t, nil, serve)
+}
+
+// fakeServiceTLS is fakeService with a listener that requires TLS, unless
+// tlsCfg is nil.
+func fakeServiceTLS(t *testing.T, tlsCfg *tls.Config, serve func(flapc *wire.FlapClient)) string {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	if tlsCfg != nil {
+		ln = tls.NewListener(ln, tlsCfg)
+	}
 	t.Cleanup(func() { _ = ln.Close() })
 
 	go func() {
@@ -43,6 +60,29 @@ func fakeService(t *testing.T, serve func(flapc *wire.FlapClient)) string {
 		serve(flapc)
 	}()
 	return ln.Addr().String()
+}
+
+// selfSignedCert returns a certificate for host and a pool that trusts it.
+func selfSignedCert(t *testing.T, host string) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: host},
+		DNSNames:     []string{host},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+	leaf, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, pool
 }
 
 func receiveFrame(flapc *wire.FlapClient) (wire.SNACFrame, error) {
@@ -83,7 +123,7 @@ func TestConn_request(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := connectService(ctx, addr, []byte("cookie"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c, err := connectService(ctx, addr, []byte("cookie"), nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	defer c.Close()
 
@@ -173,7 +213,7 @@ func TestConn_requestAll_multiPart(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, err := connectService(ctx, addr, []byte("cookie"), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	c, err := connectService(ctx, addr, []byte("cookie"), nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	defer c.Close()
 
@@ -182,4 +222,106 @@ func TestConn_requestAll_multiPart(t *testing.T) {
 	require.Len(t, parts, 2)
 	assert.Equal(t, "alice", parts[0].Body.(wire.SNAC_0x13_0x06_FeedbagReply).Items[0].Name)
 	assert.Equal(t, "bob", parts[1].Body.(wire.SNAC_0x13_0x06_FeedbagReply).Items[0].Name)
+}
+
+func TestConnectService_TLS(t *testing.T) {
+	cert, pool := selfSignedCert(t, "bos.example.com")
+	addr := fakeServiceTLS(t, &tls.Config{Certificates: []tls.Certificate{cert}}, func(flapc *wire.FlapClient) {
+		_, _ = receiveFrame(flapc) // wait for the client to hang up
+	})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	tests := []struct {
+		name    string
+		tlsCfg  *tls.Config
+		wantErr bool
+	}{
+		{
+			name:   "trusted certificate",
+			tlsCfg: &tls.Config{RootCAs: pool, ServerName: "bos.example.com"},
+		},
+		{
+			name:    "certificate for another host",
+			tlsCfg:  &tls.Config{RootCAs: pool, ServerName: "other.example.com"},
+			wantErr: true,
+		},
+		{
+			name:    "untrusted certificate",
+			tlsCfg:  &tls.Config{ServerName: "bos.example.com"},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			c, err := connectService(ctx, addr, []byte("cookie"), tt.tlsCfg, logger)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			c.Close()
+		})
+	}
+}
+
+func TestReferralTLS(t *testing.T) {
+	tests := []struct {
+		name    string
+		base    *tls.Config
+		tlvs    []wire.TLV
+		want    *tls.Config
+		wantErr error
+	}{
+		{
+			name: "plaintext client ignores SSL state",
+			tlvs: []wire.TLV{wire.NewTLVBE(wire.OServiceTLVTagsSSLState, wire.OServiceServiceResponseSSLStateResume)},
+		},
+		{
+			name: "server reports SSL",
+			base: &tls.Config{},
+			tlvs: []wire.TLV{wire.NewTLVBE(wire.OServiceTLVTagsSSLState, wire.OServiceServiceResponseSSLStateResume)},
+			want: &tls.Config{},
+		},
+		{
+			name: "server doesn't report SSL state",
+			base: &tls.Config{},
+			want: &tls.Config{},
+		},
+		{
+			name: "server names the certificate",
+			base: &tls.Config{},
+			tlvs: []wire.TLV{wire.NewTLVBE(wire.OServiceTLVTagsSSLCertName, "bos.example.com")},
+			want: &tls.Config{ServerName: "bos.example.com"},
+		},
+		{
+			name: "configured server name wins",
+			base: &tls.Config{ServerName: "mine.example.com"},
+			tlvs: []wire.TLV{wire.NewTLVBE(wire.OServiceTLVTagsSSLCertName, "bos.example.com")},
+			want: &tls.Config{ServerName: "mine.example.com"},
+		},
+		{
+			name:    "no plaintext downgrade",
+			base:    &tls.Config{},
+			tlvs:    []wire.TLV{wire.NewTLVBE(wire.OServiceTLVTagsSSLState, wire.OServiceServiceResponseSSLStateNotUsed)},
+			wantErr: ErrSSLUnavailable,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := referralTLS(tt.base, wire.TLVRestBlock{TLVList: tt.tlvs})
+			assert.ErrorIs(t, err, tt.wantErr)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestConnectService_TLSToPlaintextPort(t *testing.T) {
+	addr := fakeService(t, func(flapc *wire.FlapClient) {})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := connectService(ctx, addr, []byte("cookie"), &tls.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	assert.ErrorIs(t, err, ErrNotTLS)
 }

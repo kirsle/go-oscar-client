@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"log/slog"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -9,6 +10,11 @@ import (
 // loginArgs are the sign-on settings given on the command line.
 type loginArgs struct {
 	server, screenName, password string
+	// ssl requires or disables SSL for the sign-on, overriding the saved
+	// account. It's nil if not given.
+	ssl *bool
+	// tlsConfig is the TLS config for SSL connections.
+	tlsConfig *tls.Config
 }
 
 // model is the root of the TUI. It shows the sign-on screen until the user
