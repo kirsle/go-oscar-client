@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -27,6 +28,7 @@ type signedOnMsg struct {
 	screenName   string
 	password     string
 	savePassword bool
+	ssl          bool
 }
 
 // loginFailedMsg reports a failed signon.
@@ -46,6 +48,7 @@ const (
 	focusScreenName
 	focusPassword
 	focusSavePassword
+	focusSSL
 	focusCount
 )
 
@@ -57,7 +60,9 @@ type loginModel struct {
 	cursor       int
 	inputs       [focusCount]textinput.Model
 	savePassword bool
+	ssl          bool
 	focus        int
+	tlsConfig    *tls.Config
 
 	busy       bool
 	status     string
@@ -65,7 +70,9 @@ type loginModel struct {
 }
 
 func newLoginModel(cfg *config, logger *slog.Logger, args loginArgs) *loginModel {
-	l := &loginModel{cfg: cfg, logger: logger}
+	// SSL is required unless a saved account or the command line says
+	// otherwise
+	l := &loginModel{cfg: cfg, logger: logger, ssl: true, tlsConfig: args.tlsConfig}
 	for i := focusServer; i <= focusPassword; i++ {
 		in := textinput.New()
 		in.Prompt = ""
@@ -105,6 +112,9 @@ func newLoginModel(cfg *config, logger *slog.Logger, args loginArgs) *loginModel
 	if args.password != "" {
 		l.inputs[focusPassword].SetValue(args.password)
 	}
+	if args.ssl != nil {
+		l.ssl = *args.ssl
+	}
 	l.autoSignon = args.screenName != "" && l.value(focusPassword) != ""
 
 	switch {
@@ -135,6 +145,7 @@ func (l *loginModel) selectAccount(i int) {
 	l.inputs[focusScreenName].SetValue(a.ScreenName)
 	l.inputs[focusPassword].SetValue(a.Password)
 	l.savePassword = a.Password != ""
+	l.ssl = a.SSL
 }
 
 func (l *loginModel) setFocus(f int) {
@@ -180,7 +191,12 @@ func (l *loginModel) signOn() tea.Cmd {
 
 	l.busy = true
 	l.status = fmt.Sprintf("Signing on to %s as %s...", server, screenName)
+	if !l.ssl {
+		l.status = fmt.Sprintf("Signing on to %s as %s without SSL...", server, screenName)
+	}
 	savePassword := l.savePassword
+	ssl := l.ssl
+	tlsConfig := l.tlsConfig
 	logger := l.logger
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), signOnTimeout)
@@ -191,6 +207,8 @@ func (l *loginModel) signOn() tea.Cmd {
 			Password:       password,
 			ClientIdentity: clientIdentity,
 			Profile:        profile,
+			SSL:            ssl,
+			TLSConfig:      tlsConfig,
 			Logger:         logger,
 		})
 		if err != nil {
@@ -202,6 +220,7 @@ func (l *loginModel) signOn() tea.Cmd {
 			screenName:   screenName,
 			password:     password,
 			savePassword: savePassword,
+			ssl:          ssl,
 		}
 	}
 }
@@ -210,7 +229,7 @@ func (l *loginModel) signOn() tea.Cmd {
 func (l *loginModel) signedOn(msg signedOnMsg) {
 	l.busy = false
 	l.status = ""
-	l.cfg.remember(msg.server, msg.screenName, msg.password, msg.savePassword)
+	l.cfg.remember(msg.server, msg.screenName, msg.password, msg.savePassword, msg.ssl)
 	l.cursor = l.cfg.last()
 	_ = l.cfg.save()
 }
@@ -283,12 +302,20 @@ func (l *loginModel) update(msg tea.Msg) tea.Cmd {
 				}
 			}
 			return nil
-		case focusSavePassword:
+		case focusSavePassword, focusSSL:
 			switch msg.String() {
 			case " ", "x":
-				l.savePassword = !l.savePassword
+				if l.focus == focusSavePassword {
+					l.savePassword = !l.savePassword
+				} else {
+					l.ssl = !l.ssl
+				}
 			case "up":
 				l.moveFocus(-1)
+			case "down":
+				if l.focus == focusSavePassword {
+					l.moveFocus(1)
+				}
 			}
 			return nil
 		default:
@@ -330,6 +357,9 @@ func (l *loginModel) view(width, height int) string {
 		b.WriteString(label + "\n")
 		for i, a := range l.cfg.Accounts {
 			line := fmt.Sprintf("%s @ %s", a.ScreenName, a.Server)
+			if !a.SSL {
+				line += dimStyle.Render("  (no SSL)")
+			}
 			if a.Password != "" {
 				line += dimStyle.Render("  (password saved)")
 			}
@@ -362,15 +392,8 @@ func (l *loginModel) view(width, height int) string {
 		b.WriteString(label + " " + inputBoxStyle.Render(l.inputs[f].View()) + "\n")
 	}
 
-	check := "[ ]"
-	if l.savePassword {
-		check = "[x]"
-	}
-	saveLine := check + " Save password"
-	if l.focus == focusSavePassword {
-		saveLine = focusedLabelStyle.Render(saveLine)
-	}
-	b.WriteString("\n" + saveLine + "\n\n")
+	b.WriteString("\n" + l.checkbox(focusSavePassword, l.savePassword, "Save password") + "\n")
+	b.WriteString(l.checkbox(focusSSL, l.ssl, "Require SSL") + "\n\n")
 
 	if l.status != "" {
 		style := statusStyle
@@ -388,4 +411,17 @@ func (l *loginModel) view(width, height int) string {
 
 	box := boxStyle.Width(min(72, width-4)).Render(b.String())
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+}
+
+// checkbox renders the checkbox for field f.
+func (l *loginModel) checkbox(f int, checked bool, label string) string {
+	check := "[ ]"
+	if checked {
+		check = "[x]"
+	}
+	line := check + " " + label
+	if l.focus == f {
+		line = focusedLabelStyle.Render(line)
+	}
+	return line
 }

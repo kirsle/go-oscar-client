@@ -183,6 +183,9 @@ func (c *Client) joinFromNavInfo(ctx context.Context, reply wire.SNACMessage) (*
 		Cookie:         roomInfo.Cookie,
 		InstanceNumber: roomInfo.InstanceNumber,
 	}))
+	if c.tls != nil {
+		svcReq.Append(wire.NewTLVBE(wire.OserviceTLVTagsSSLUseSSL, []byte{}))
+	}
 	reply, err := c.bos.request(ctx, wire.OService, wire.OServiceServiceRequest, svcReq)
 	if err != nil {
 		return nil, err
@@ -197,7 +200,11 @@ func (c *Client) joinFromNavInfo(ctx context.Context, reply wire.SNACMessage) (*
 		return nil, errors.New("chat service reply is missing the server address or cookie")
 	}
 
-	conn, err := connectService(ctx, addr, cookie, c.logger)
+	chatTLS, err := referralTLS(c.tls, svc.TLVRestBlock)
+	if err != nil {
+		return nil, fmt.Errorf("connect to chat server %s: %w", addr, err)
+	}
+	conn, err := connectService(ctx, addr, cookie, chatTLS, c.logger)
 	if err != nil {
 		return nil, fmt.Errorf("connect to chat server %s: %w", addr, err)
 	}
