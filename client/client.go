@@ -18,6 +18,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -59,6 +60,14 @@ type Config struct {
 	ClientIdentity string
 	// Profile is the profile to set at signon.
 	Profile string
+	// SSL secures every connection with TLS: the auth server at Server must
+	// accept TLS connections, and the client refuses to continue in
+	// plaintext if the server refers it to a service without SSL.
+	SSL bool
+	// TLSConfig customizes the TLS connections when SSL is set, for example
+	// to trust a private CA with RootCAs. Defaults to verifying the server
+	// certificate against the system roots.
+	TLSConfig *tls.Config
 	// Logger receives debug logs. Defaults to discarding them.
 	Logger *slog.Logger
 }
@@ -69,6 +78,9 @@ type Client struct {
 	logger *slog.Logger
 	bos    *conn
 	events chan Event
+	// tls is the TLS config for new service connections, or nil for
+	// plaintext.
+	tls *tls.Config
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -98,12 +110,20 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
-	login, err := bucpLogin(ctx, cfg.Server, cfg.ScreenName, cfg.Password, cfg.ClientIdentity)
+	var tlsCfg *tls.Config
+	if cfg.SSL {
+		tlsCfg = &tls.Config{}
+		if cfg.TLSConfig != nil {
+			tlsCfg = cfg.TLSConfig.Clone()
+		}
+	}
+
+	login, err := bucpLogin(ctx, cfg.Server, cfg.ScreenName, cfg.Password, cfg.ClientIdentity, tlsCfg)
 	if err != nil {
 		return nil, err
 	}
 
-	bos, err := connectService(ctx, login.bosAddr, login.cookie, cfg.Logger)
+	bos, err := connectService(ctx, login.bosAddr, login.cookie, login.bosTLS, cfg.Logger)
 	if err != nil {
 		return nil, fmt.Errorf("connect to BOS server %s: %w", login.bosAddr, err)
 	}
@@ -112,6 +132,7 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		logger:   cfg.Logger,
 		bos:      bos,
 		events:   make(chan Event, eventQueueLimit),
+		tls:      tlsCfg,
 		stop:     make(chan struct{}),
 		presence: make(map[string]UserInfo),
 		chats:    make(map[string]*ChatRoom),

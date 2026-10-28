@@ -17,6 +17,9 @@ type account struct {
 	ScreenName string `json:"screen_name"`
 	// Password is only stored if the user asked to save it.
 	Password string `json:"password,omitempty"`
+	// SSL is whether to require SSL for the server. Accounts saved before
+	// SSL support lack it and keep signing on in plaintext.
+	SSL bool `json:"ssl"`
 	// Profile is set at each signon, since OSCAR clients store their
 	// profiles locally.
 	Profile string `json:"profile,omitempty"`
@@ -108,13 +111,14 @@ func (c *config) last() int {
 
 // remember records a successful signon. The password is saved only if
 // savePassword is set; otherwise any saved password is forgotten.
-func (c *config) remember(server, screenName, password string, savePassword bool) *account {
+func (c *config) remember(server, screenName, password string, savePassword, ssl bool) *account {
 	a := c.find(server, screenName)
 	if a == nil {
 		c.Accounts = append(c.Accounts, account{Server: server})
 		a = &c.Accounts[len(c.Accounts)-1]
 	}
 	a.ScreenName = screenName
+	a.SSL = ssl
 	a.Password = ""
 	if savePassword {
 		a.Password = password

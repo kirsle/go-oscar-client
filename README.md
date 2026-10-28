@@ -74,7 +74,22 @@ password, or pick a saved screen name. To sign on straight away, pass all three
 on the command line:
 
 ```sh
-go run ./cmd/tui_client -server 127.0.0.1:5190 -screenname alice -password secret
+go run ./cmd/tui_client -server aim.example.com:5193 -screenname alice -password secret
+```
+
+SSL is required by default: "Require SSL" is ticked on the sign-on screen, so
+use the server's SSL port (5193 for Open OSCAR Server behind its nginx SSL
+terminator). If the server's certificate is signed by its own CA, pass that CA
+with `-cafile`:
+
+```sh
+go run ./cmd/tui_client -server aim.example.com:5193 -cafile ca.crt
+```
+
+To sign on to a server without SSL, untick "Require SSL" or pass `-ssl=false`:
+
+```sh
+go run ./cmd/tui_client -ssl=false -server 127.0.0.1:5190
 ```
 
 | Flag          | Description                                                           |
@@ -82,6 +97,9 @@ go run ./cmd/tui_client -server 127.0.0.1:5190 -screenname alice -password secre
 | `-server`     | OSCAR server address (`host:port`), default `127.0.0.1:5190`          |
 | `-screenname` | Screen name to sign on with                                           |
 | `-password`   | Password to sign on with                                              |
+| `-ssl`        | Require SSL, default `true`; `-ssl=false` signs on in plaintext        |
+| `-cafile`     | PEM file of extra CA certificates to trust, e.g. a server's own CA    |
+| `-insecure`   | Skip verifying the server's SSL certificate                           |
 | `-config`     | Config file path, default `<user config dir>/go-oscar-tui/config.json` |
 | `-plain`      | Strip HTML from messages instead of rendering it with terminal colors |
 | `-mouse`      | Make tabs and buddies clickable (default); `-mouse=false` to disable  |
@@ -89,6 +107,7 @@ go run ./cmd/tui_client -server 127.0.0.1:5190 -screenname alice -password secre
 
 ### Features
 
+- SSL connections, with certificate verification
 - Buddy list with groups, online/away/idle status and warning levels
 - Instant messages, with automatic replies while you're away
 - Chat rooms: join or create, invite, accept invitations, list users
@@ -148,8 +167,8 @@ scrolls to the focused field.
 ### Config file
 
 The client remembers each server and screen name you sign on with. For each
-account it saves your profile, last away message and font style, plus your
-password if you tick "Save password". The file is only readable by you, but a
+account it saves whether SSL is required, your profile, last away message
+and font style, plus your password if you tick "Save password". The file is only readable by you, but a
 saved password is stored in plain text.
 
 ## Library
@@ -186,6 +205,31 @@ server-stored buddy list (feedbag) in sync, and reports activity as events:
 buddies arriving and leaving, IMs, warnings, chat invitations and messages, and
 disconnects. Its methods cover IMs, profiles, away messages, buddy list and
 block list changes, warnings and chat rooms; see the package documentation.
+
+### SSL
+
+Set `SSL` to connect with TLS. The server at `Server` must accept TLS
+connections, such as Open OSCAR Server's SSL port. The client follows the SSL
+state the server reports for the BOS and chat connections it refers the client
+to. It never falls back to plaintext: if the server says a service doesn't use
+SSL, `Dial` or `JoinChat` fails with `client.ErrSSLUnavailable`. Connecting
+with SSL to a plaintext port fails with `client.ErrNotTLS`.
+
+The server certificate is checked against the system roots. To trust a
+server's own CA, set `TLSConfig`:
+
+```go
+pool := x509.NewCertPool()
+pool.AppendCertsFromPEM(caPEM)
+
+c, err := client.Dial(ctx, client.Config{
+	Server:     "aim.example.com:5193",
+	ScreenName: "alice",
+	Password:   "secret",
+	SSL:        true,
+	TLSConfig:  &tls.Config{RootCAs: pool},
+})
+```
 
 `client/htmlterm` converts the HTML in AIM messages and profiles to ANSI-styled
 or plain text for terminals.

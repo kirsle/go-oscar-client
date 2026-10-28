@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"time"
@@ -42,12 +43,14 @@ func (e *LoginError) Error() string {
 type loginResult struct {
 	bosAddr string
 	cookie  []byte
+	// bosTLS is the TLS config for the BOS connection, or nil for plaintext.
+	bosTLS *tls.Config
 }
 
 // bucpLogin signs on to the auth service at addr with BUCP (MD5 challenge)
-// authentication.
-func bucpLogin(ctx context.Context, addr, screenName, password, clientID string) (loginResult, error) {
-	nc, err := dial(ctx, addr)
+// authentication. The auth and BOS connections use TLS unless tlsCfg is nil.
+func bucpLogin(ctx context.Context, addr, screenName, password, clientID string, tlsCfg *tls.Config) (loginResult, error) {
+	nc, err := dial(ctx, addr, tlsCfg)
 	if err != nil {
 		return loginResult{}, fmt.Errorf("dial %s: %w", addr, err)
 	}
@@ -117,7 +120,11 @@ func bucpLogin(ctx context.Context, addr, screenName, password, clientID string)
 	if !hasAddr || !hasCookie {
 		return loginResult{}, errors.New("login response is missing the BOS address or cookie")
 	}
-	return loginResult{bosAddr: bosAddr, cookie: cookie}, nil
+	bosTLS, err := referralTLS(tlsCfg, resp.TLVRestBlock)
+	if err != nil {
+		return loginResult{}, fmt.Errorf("connect to BOS server %s: %w", bosAddr, err)
+	}
+	return loginResult{bosAddr: bosAddr, cookie: cookie, bosTLS: bosTLS}, nil
 }
 
 // receiveAuthSNAC receives the next SNAC from the auth service.
