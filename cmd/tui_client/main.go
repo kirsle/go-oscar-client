@@ -29,6 +29,7 @@ func main() {
 		configPath = flag.String("config", defaultConfigPath(), "path of the config file that remembers screen names")
 		plain      = flag.Bool("plain", false, "strip HTML formatting instead of rendering it with terminal colors")
 		logPath    = flag.String("log", "", "write debug logs to this file")
+		mouse      = flag.Bool("mouse", true, "make tabs and buddies clickable; most terminals then need Shift held to select text")
 	)
 	flag.Parse()
 
@@ -54,7 +55,11 @@ func main() {
 		screenName: *screenName,
 		password:   *password,
 	})
-	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
+	opts := []tea.ProgramOption{tea.WithAltScreen()}
+	if *mouse {
+		opts = append(opts, tea.WithMouseCellMotion())
+	}
+	if _, err := tea.NewProgram(m, opts...).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

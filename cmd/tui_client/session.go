@@ -23,8 +23,8 @@ const requestTimeout = 15 * time.Second
 // maxWindowLines is how many lines a window keeps.
 const maxWindowLines = 1000
 
-// buddyPaneWidth is the inner width of the buddy list pane.
-const buddyPaneWidth = 26
+// wheelLines is how many lines the mouse wheel scrolls a window.
+const wheelLines = 3
 
 // defaultAwayMessage is used by /away when no message is given or saved.
 const defaultAwayMessage = "I am away from my computer right now."
@@ -47,7 +47,7 @@ type window struct {
 	// peer is the IM correspondent or the user whose info is shown.
 	peer   string
 	room   *client.ChatRoom
-	lines  []string
+	lines  []logLine
 	unread bool
 	// scroll is how many lines the view is scrolled up from the bottom.
 	scroll int
@@ -55,8 +55,22 @@ type window struct {
 	gotUsers bool
 }
 
-func (w *window) add(line string) {
-	w.lines = append(w.lines, line)
+// logLine is a line of a window. Its timestamp is shown if the terminal is
+// wide enough.
+type logLine struct {
+	// at is when the line was logged, or zero for lines without a timestamp.
+	at   time.Time
+	text string
+}
+
+// add adds a line without a timestamp.
+func (w *window) add(text string) {
+	w.addAt(time.Time{}, text)
+}
+
+// addAt adds a line with a timestamp.
+func (w *window) addAt(at time.Time, text string) {
+	w.lines = append(w.lines, logLine{at: at, text: text})
 	if len(w.lines) > maxWindowLines {
 		w.lines = w.lines[len(w.lines)-maxWindowLines:]
 	}
@@ -69,6 +83,10 @@ type buddyRow struct {
 	screenName string
 	// blocked marks rows of the block list.
 	blocked bool
+	// wrap marks rows that are wrapped to the pane width instead of cut off.
+	// Only the hint shown in place of an empty buddy list is, since the
+	// buddy list scrolls by rows.
+	wrap bool
 }
 
 // Session pane focus.
@@ -120,6 +138,9 @@ type sessionModel struct {
 	input   textinput.Model
 	editor  textarea.Model
 	editing bool
+
+	// zones are the clickable parts of the screen, found as it's drawn.
+	zones []zone
 
 	lastInvite  *client.ChatInvite
 	awayReplied map[string]bool
@@ -254,9 +275,10 @@ func (s *sessionModel) closeWindow(i int) {
 	}
 }
 
-// appendTo adds a line to w, marking it unread if it's in the background.
-func (s *sessionModel) appendTo(w *window, line string) {
-	w.add(line)
+// appendTo adds a line to w with a timestamp, or none if at is zero, marking
+// w unread if it's in the background.
+func (s *sessionModel) appendTo(w *window, at time.Time, text string) {
+	w.addAt(at, text)
 	if w != s.current() {
 		w.unread = true
 	}
@@ -264,7 +286,7 @@ func (s *sessionModel) appendTo(w *window, line string) {
 
 // status logs a line to the status window.
 func (s *sessionModel) status(text string) {
-	s.appendTo(s.windows[0], timestamp(time.Now())+" "+statusStyle.Render(text))
+	s.appendTo(s.windows[0], time.Now(), statusStyle.Render(text))
 }
 
 // notify logs an important line to the status window and to the active
@@ -274,10 +296,10 @@ func (s *sessionModel) notify(text string, isErr bool) {
 	if isErr {
 		style = errorStyle
 	}
-	line := timestamp(time.Now()) + " " + style.Render(text)
-	s.appendTo(s.windows[0], line)
+	now, line := time.Now(), style.Render(text)
+	s.appendTo(s.windows[0], now, line)
 	if s.active != 0 {
-		s.current().add(line)
+		s.current().addAt(now, line)
 	}
 }
 
@@ -309,7 +331,7 @@ func (s *sessionModel) refreshBuddies() {
 		}
 	}
 	if len(rows) == 0 {
-		rows = append(rows, buddyRow{text: dimStyle.Render("No buddies. Use /add <name>")})
+		rows = append(rows, buddyRow{text: dimStyle.Render("No buddies. Use /add <name>"), wrap: true})
 	}
 	s.buddyRows = rows
 	s.clampBuddyCursor(1)
@@ -405,7 +427,7 @@ func (s *sessionModel) update(msg tea.Msg, width, height int) tea.Cmd {
 			if msg.err != nil {
 				style = errorStyle
 			}
-			s.appendTo(w, timestamp(time.Now())+" "+style.Render(text))
+			s.appendTo(w, time.Now(), style.Render(text))
 		} else {
 			s.notify(text, msg.err != nil)
 		}
@@ -427,6 +449,11 @@ func (s *sessionModel) update(msg tea.Msg, width, height int) tea.Cmd {
 			return s.updateEditor(msg)
 		}
 		return s.handleKey(msg, height)
+	case tea.MouseMsg:
+		if !s.editing {
+			s.handleMouse(msg)
+		}
+		return nil
 	}
 
 	if s.editing {
@@ -447,8 +474,7 @@ func (s *sessionModel) handleKey(msg tea.KeyMsg, height int) tea.Cmd {
 			s.focus = focusBuddies
 			s.input.Blur()
 		} else {
-			s.focus = focusInput
-			s.input.Focus()
+			s.focusInput()
 		}
 		return nil
 	case "ctrl+n", "alt+right":
@@ -510,8 +536,7 @@ func (s *sessionModel) handleBuddyKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "enter", "m":
 		s.activate(s.imWindow(row.screenName))
-		s.focus = focusInput
-		s.input.Focus()
+		s.focusInput()
 	case "i":
 		return s.getInfo(row.screenName)
 	case "w":
@@ -561,6 +586,65 @@ func (s *sessionModel) updateEditor(msg tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
+// mouse
+
+// handleMouse clicks the zone under the mouse or scrolls with the wheel.
+func (s *sessionModel) handleMouse(msg tea.MouseMsg) {
+	if msg.Action != tea.MouseActionPress {
+		return
+	}
+	switch msg.Button {
+	case tea.MouseButtonLeft:
+		for _, z := range s.zones {
+			if msg.Y == z.y && msg.X >= z.x && msg.X < z.x+z.width {
+				z.click()
+				return
+			}
+		}
+	case tea.MouseButtonWheelUp:
+		if s.focus == focusBuddies {
+			s.moveBuddyCursor(-1)
+		} else {
+			s.current().scroll += wheelLines
+		}
+	case tea.MouseButtonWheelDown:
+		if s.focus == focusBuddies {
+			s.moveBuddyCursor(1)
+		} else {
+			s.current().scroll = max(0, s.current().scroll-wheelLines)
+		}
+	}
+}
+
+// addZone makes a part of a screen line clickable.
+func (s *sessionModel) addZone(x, y, width int, click func()) {
+	s.zones = append(s.zones, zone{x: x, y: y, width: width, click: click})
+}
+
+func (s *sessionModel) focusInput() {
+	s.focus = focusInput
+	s.input.Focus()
+}
+
+// clickWindow switches to a window clicked in the tabs.
+func (s *sessionModel) clickWindow(w *window) {
+	s.activate(w)
+	s.focusInput()
+}
+
+// clickBuddy selects a buddy clicked in the buddy list, or opens an IM with
+// them if they're already selected.
+func (s *sessionModel) clickBuddy(i int) {
+	if s.focus == focusBuddies && s.buddyCursor == i {
+		s.activate(s.imWindow(s.buddyRows[i].screenName))
+		s.focusInput()
+		return
+	}
+	s.buddyCursor = i
+	s.focus = focusBuddies
+	s.input.Blur()
+}
+
 // events
 
 func (s *sessionModel) handleEvent(ev client.Event) tea.Cmd {
@@ -581,19 +665,19 @@ func (s *sessionModel) handleEvent(ev client.Event) tea.Cmd {
 			change = "is back"
 		}
 		if change != "" {
-			line := timestamp(time.Now()) + " " + dimStyle.Render(ev.Info.ScreenName+" "+change)
-			s.appendTo(s.windows[0], line)
+			now, line := time.Now(), dimStyle.Render(ev.Info.ScreenName+" "+change)
+			s.appendTo(s.windows[0], now, line)
 			if w := s.find(imKey(ev.Info.ScreenName)); w != nil {
-				w.add(line)
+				w.addAt(now, line)
 			}
 		}
 		s.refreshBuddies()
 	case client.BuddyDepartedEvent:
 		delete(s.online, client.NormalizeScreenName(ev.ScreenName))
-		line := timestamp(time.Now()) + " " + dimStyle.Render(ev.ScreenName+" signed off")
-		s.appendTo(s.windows[0], line)
+		now, line := time.Now(), dimStyle.Render(ev.ScreenName+" signed off")
+		s.appendTo(s.windows[0], now, line)
 		if w := s.find(imKey(ev.ScreenName)); w != nil {
-			w.add(line)
+			w.addAt(now, line)
 		}
 		s.refreshBuddies()
 	case client.IMEvent:
@@ -603,7 +687,7 @@ func (s *sessionModel) handleEvent(ev client.Event) tea.Cmd {
 		if ev.AutoResponse {
 			name += dimStyle.Render(" (auto-response)")
 		}
-		s.appendTo(w, fmt.Sprintf("%s %s: %s", timestamp(ev.Time), name, s.render(ev.Message)))
+		s.appendTo(w, ev.Time, fmt.Sprintf("%s: %s", name, s.render(ev.Message)))
 		if away := s.client.AwayMessage(); away != "" && !ev.AutoResponse {
 			key := client.NormalizeScreenName(ev.From.ScreenName)
 			if !s.awayReplied[key] {
@@ -641,7 +725,7 @@ func (s *sessionModel) handleEvent(ev client.Event) tea.Cmd {
 	case client.ChatJoinedEvent:
 		w := s.open(&window{kind: winChat, key: "chat:" + ev.Room.ID(), title: "#" + ev.Room.Name()})
 		w.room = ev.Room
-		w.add(timestamp(time.Now()) + " " + statusStyle.Render("You joined chat room "+ev.Room.Name()+"."))
+		w.addAt(time.Now(), statusStyle.Render("You joined chat room "+ev.Room.Name()+"."))
 		s.activate(w)
 	case client.ChatMessageEvent:
 		w := s.find("chat:" + ev.Room.ID())
@@ -652,7 +736,7 @@ func (s *sessionModel) handleEvent(ev client.Event) tea.Cmd {
 		if client.NormalizeScreenName(ev.From) == client.NormalizeScreenName(s.screenName) {
 			name = selfStyle.Render(ev.From)
 		}
-		s.appendTo(w, fmt.Sprintf("%s %s: %s", timestamp(ev.Time), name, s.render(ev.Message)))
+		s.appendTo(w, ev.Time, fmt.Sprintf("%s: %s", name, s.render(ev.Message)))
 	case client.ChatUsersEvent:
 		w := s.find("chat:" + ev.Room.ID())
 		if w == nil {
@@ -667,7 +751,7 @@ func (s *sessionModel) handleEvent(ev client.Event) tea.Cmd {
 		case ev.Joined:
 			text = strings.Join(ev.Users, ", ") + " joined"
 		}
-		w.add(timestamp(time.Now()) + " " + dimStyle.Render(text))
+		w.addAt(time.Now(), dimStyle.Render(text))
 	case client.ChatClosedEvent:
 		w := s.find("chat:" + ev.Room.ID())
 		if w == nil {
@@ -678,7 +762,7 @@ func (s *sessionModel) handleEvent(ev client.Event) tea.Cmd {
 		if ev.Err != nil {
 			text = "Disconnected from the chat room: " + ev.Err.Error()
 		}
-		s.appendTo(w, timestamp(time.Now())+" "+statusStyle.Render(text))
+		s.appendTo(w, time.Now(), statusStyle.Render(text))
 	case client.DisconnectedEvent:
 		reason := "Disconnected."
 		if ev.Err != nil && !errors.Is(ev.Err, client.ErrClosed) {
@@ -725,7 +809,7 @@ func (s *sessionModel) sendToCurrent(text string) tea.Cmd {
 		return s.sendIM(w.peer, s.compose(text), false)
 	case winChat:
 		if w.room == nil {
-			s.appendTo(w, errorStyle.Render("You are not in this chat room. Use /join to rejoin."))
+			s.appendTo(w, time.Time{}, errorStyle.Render("You are not in this chat room. Use /join to rejoin."))
 			return nil
 		}
 		room, msg := w.room, s.compose(text)
@@ -748,7 +832,7 @@ func (s *sessionModel) sendIM(to, message string, auto bool) tea.Cmd {
 	if auto {
 		name += dimStyle.Render(" (auto-response)")
 	}
-	w.add(fmt.Sprintf("%s %s: %s", timestamp(time.Now()), name, s.render(message)))
+	w.addAt(time.Now(), fmt.Sprintf("%s: %s", name, s.render(message)))
 	c := s.client
 	return s.do(w.key, func(ctx context.Context) (string, error) {
 		var err error
@@ -906,96 +990,162 @@ func (s *sessionModel) acceptInvite(inv client.ChatInvite) tea.Cmd {
 // view
 
 func (s *sessionModel) view(width, height int) string {
-	header := s.headerView(width)
-	help := dimStyle.Render(s.helpLine())
-	inputLine := s.inputView(width)
+	lay := newLayout(width, height)
+	s.zones = s.zones[:0]
+	var top, bottom []string
+	if lay.header {
+		top = append(top, s.headerView(width))
+	}
+	bottom = append(bottom, s.inputView(width))
+	if lay.help {
+		bottom = append(bottom, dimStyle.Render(fit(width, s.helpLines()...)))
+	}
+	lines, inputY := top, len(top)
+	if bodyHeight := height - len(top) - len(bottom); bodyHeight > 0 {
+		lines = append(lines, s.bodyView(lay, len(top), width, bodyHeight))
+		inputY += bodyHeight
+	}
+	s.addZone(0, inputY, width, s.focusInput)
+	return strings.Join(append(lines, bottom...), "\n")
+}
 
-	bodyHeight := height - lipgloss.Height(header) - lipgloss.Height(help) - lipgloss.Height(inputLine)
-	if bodyHeight < 5 {
-		bodyHeight = 5
+// bodyView renders the buddy list and the main pane in height lines, starting
+// at screen line y.
+func (s *sessionModel) bodyView(lay layout, y, width, height int) string {
+	innerHeight, mainWidth, border := height, width, 0
+	if lay.borders {
+		innerHeight, mainWidth, border = height-2, width-2, 1
 	}
-	innerHeight := bodyHeight - 2
+	var side string
+	if lay.buddyWidth > 0 {
+		side = s.buddyPaneView(lay, border, y+border, innerHeight)
+		mainWidth -= lipgloss.Width(side)
+	}
+	mainX, mainY := lipgloss.Width(side)+border, y+border
 
-	buddyPane := s.buddyPaneView(innerHeight)
-	mainWidth := width - buddyPaneWidth - 4
-	var mainPane string
-	if s.editing {
-		mainPane = s.editorView(mainWidth, innerHeight)
-	} else {
-		mainPane = s.windowView(mainWidth, innerHeight)
+	mainFocused := s.focus == focusInput || s.editing
+	var content string
+	switch {
+	case s.editing:
+		content = s.editorView(mainWidth, innerHeight)
+	case s.focus == focusBuddies && lay.buddyWidth == 0:
+		// no room beside the main pane: the buddy list takes its place
+		content = s.buddyListView(mainX, mainY, mainWidth, innerHeight)
+		mainFocused = true
+	default:
+		content = s.windowView(lay, mainX, mainY, mainWidth, innerHeight)
 	}
-	mainStyle := paneStyle
-	if s.focus == focusInput || s.editing {
-		mainStyle = focusedPaneStyle
+	style := lipgloss.NewStyle()
+	if lay.borders {
+		style = paneStyle
+		if mainFocused {
+			style = focusedPaneStyle
+		}
 	}
-	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		buddyPane,
-		mainStyle.Width(mainWidth).Height(innerHeight).Render(mainPane),
-	)
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, inputLine, help)
+	main := style.Width(mainWidth).Height(innerHeight).Render(content)
+	if side == "" {
+		return main
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, side, main)
 }
 
 func (s *sessionModel) headerView(width int) string {
 	self := s.client.Self()
-	parts := []string{titleStyle.Render("Go OSCAR"), selfStyle.Render(s.screenName)}
-	warnText := fmt.Sprintf("warning %d%%", self.WarningLevel)
+	join := func(parts ...string) string {
+		var nonEmpty []string
+		for _, p := range parts {
+			if p != "" {
+				nonEmpty = append(nonEmpty, p)
+			}
+		}
+		return strings.Join(nonEmpty, dimStyle.Render(" · "))
+	}
+
+	// the short forms leave out what's usual: no warning, being available
+	name := selfStyle.Render(s.screenName)
+	warn, shortWarn := dimStyle.Render(fmt.Sprintf("warning %d%%", self.WarningLevel)), ""
 	if self.WarningLevel > 0 {
-		parts = append(parts, errorStyle.Render(warnText))
-	} else {
-		parts = append(parts, dimStyle.Render(warnText))
+		warn = errorStyle.Render(fmt.Sprintf("warning %d%%", self.WarningLevel))
+		shortWarn = errorStyle.Render(fmt.Sprintf("%d%%", self.WarningLevel))
 	}
+	state, shortState := onlineStyle.Render("available"), ""
 	if s.client.AwayMessage() != "" {
-		parts = append(parts, awayStyle.Render("away"))
-	} else {
-		parts = append(parts, onlineStyle.Render("available"))
+		state = awayStyle.Render("away")
+		shortState = state
 	}
+	var rate string
 	if s.rateLimited {
-		parts = append(parts, errorStyle.Render("rate limited"))
+		rate = errorStyle.Render("rate limited")
 	}
-	left := " " + strings.Join(parts, dimStyle.Render(" · "))
+
+	left := " " + join(titleStyle.Render("Go OSCAR"), name, warn, state, rate)
 	right := dimStyle.Render(s.server + " ")
-	gap := max(1, width-lipgloss.Width(left)-lipgloss.Width(right))
-	return left + strings.Repeat(" ", gap) + right
+	if gap := width - lipgloss.Width(left) - lipgloss.Width(right); gap >= 1 {
+		return left + strings.Repeat(" ", gap) + right
+	}
+	short := join(name, shortWarn, shortState, rate)
+	return fit(width, left, " "+short, short)
 }
 
-func (s *sessionModel) buddyPaneView(innerHeight int) string {
-	var lines []string
-	title := "Buddy List"
+// buddyPaneView renders the buddy list beside the main pane, with its
+// content at screen position x, y.
+func (s *sessionModel) buddyPaneView(lay layout, x, y, height int) string {
+	style := separatorStyle
+	if lay.borders {
+		style = paneStyle
+	}
 	if s.focus == focusBuddies {
-		title = focusedLabelStyle.Render(title)
-	} else {
-		title = dimStyle.Render(title)
+		style = style.BorderForeground(accentColor)
 	}
-	lines = append(lines, title)
+	return style.Width(lay.buddyWidth).Height(height).Render(s.buddyListView(x, y, lay.buddyWidth, height))
+}
 
-	visible := innerHeight - 1
-	start := 0
-	if s.buddyCursor >= visible {
-		start = s.buddyCursor - visible + 1
+// buddyListView renders the buddy list in height lines at screen position x,
+// y, scrolled to the cursor.
+func (s *sessionModel) buddyListView(x, y, width, height int) string {
+	var lines []string
+	if height >= 3 {
+		title := fit(width, "Buddy List", "Buddies")
+		if s.focus == focusBuddies {
+			title = focusedLabelStyle.Render(title)
+		} else {
+			title = dimStyle.Render(title)
+		}
+		lines = append(lines, title)
 	}
-	truncate := lipgloss.NewStyle().MaxWidth(buddyPaneWidth)
-	for i := start; i < len(s.buddyRows) && len(lines) < innerHeight; i++ {
+
+	visible := height - len(lines)
+	start := max(0, s.buddyCursor-visible+1)
+	for i := start; i < len(s.buddyRows) && len(lines) < height; i++ {
 		row := s.buddyRows[i]
 		text := row.text
 		if row.screenName != "" {
 			text = " " + text
 		}
-		text = truncate.Render(text)
+		if row.wrap {
+			wrapped := strings.Split(lipgloss.NewStyle().Width(width).Render(text), "\n")
+			lines = append(lines, wrapped[:min(len(wrapped), height-len(lines))]...)
+			continue
+		}
+		if row.screenName != "" {
+			s.addZone(x, y+len(lines), width, func() { s.clickBuddy(i) })
+		}
+		text = truncate(text, width)
 		if i == s.buddyCursor && s.focus == focusBuddies && row.screenName != "" {
-			text = selectedStyle.Render(text + strings.Repeat(" ", max(0, buddyPaneWidth-lipgloss.Width(text))))
+			text = selectedStyle.Render(text + strings.Repeat(" ", max(0, width-lipgloss.Width(text))))
 		}
 		lines = append(lines, text)
 	}
-
-	style := paneStyle
-	if s.focus == focusBuddies {
-		style = focusedPaneStyle
-	}
-	return style.Width(buddyPaneWidth).Height(innerHeight).Render(strings.Join(lines, "\n"))
+	return strings.Join(lines, "\n")
 }
 
-func (s *sessionModel) tabsView(width int) string {
+// tabsView renders the window tabs at screen position x, y, or only the
+// active window's if they don't all fit. Clicking a tab switches to its
+// window; clicking the active window's tab alone switches to the next one.
+func (s *sessionModel) tabsView(x, y, width int) string {
+	sep := dimStyle.Render(" │ ")
 	var tabs []string
+	var unread string
 	for i, w := range s.windows {
 		title := w.title
 		switch {
@@ -1003,23 +1153,73 @@ func (s *sessionModel) tabsView(width int) string {
 			tabs = append(tabs, activeTabStyle.Render(title))
 		case w.unread:
 			tabs = append(tabs, unreadTabStyle.Render(title+"*"))
+			unread = unreadTabStyle.Render(" *")
 		default:
 			tabs = append(tabs, inactiveTabStyle.Render(title))
 		}
 	}
-	return lipgloss.NewStyle().MaxWidth(width).Render(strings.Join(tabs, dimStyle.Render(" │ ")))
+	if full := strings.Join(tabs, sep); lipgloss.Width(full) <= width {
+		for i, tab := range tabs {
+			w := s.windows[i]
+			s.addZone(x, y, lipgloss.Width(tab), func() { s.clickWindow(w) })
+			x += lipgloss.Width(tab) + lipgloss.Width(sep)
+		}
+		return full
+	}
+
+	next := s.windows[(s.active+1)%len(s.windows)]
+	s.addZone(x, y, width, func() { s.clickWindow(next) })
+	title := s.current().title
+	pos := dimStyle.Render(fmt.Sprintf("%d/%d ", s.active+1, len(s.windows)))
+	return fit(width,
+		pos+activeTabStyle.Render(title)+unread,
+		activeTabStyle.Render(truncate(title, width-lipgloss.Width(unread)))+unread,
+	)
 }
 
-func (s *sessionModel) windowView(width, height int) string {
+// subLine describes the active window under the tabs.
+func (s *sessionModel) subLine(w *window) string {
+	if w.scroll > 0 {
+		return fmt.Sprintf("scrolled up %d lines (PgDn to return)", w.scroll)
+	}
+	switch w.kind {
+	case winChat:
+		if w.room != nil {
+			return fmt.Sprintf("%d in room: %s", len(w.room.Users()), strings.Join(w.room.Users(), ", "))
+		}
+	case winIM:
+		if info, ok := s.online[client.NormalizeScreenName(w.peer)]; ok {
+			if info.Away {
+				return info.ScreenName + " is online (away)"
+			}
+			return info.ScreenName + " is online"
+		}
+		return w.peer + " is offline"
+	}
+	return ""
+}
+
+// windowView renders the active window at screen position x, y.
+func (s *sessionModel) windowView(lay layout, x, y, width, height int) string {
 	w := s.current()
-	tabs := s.tabsView(width)
-	contentHeight := height - 2
+	var headRows int
+	switch {
+	case height >= subLineHeight:
+		headRows = 2 // tabs and sub line
+	case height >= 2:
+		headRows = 1 // tabs
+	}
+	contentHeight := height - headRows
 
 	// wrap lines to the pane width
 	wrap := lipgloss.NewStyle().Width(width)
 	var rows []string
-	for _, line := range w.lines {
-		rows = append(rows, strings.Split(wrap.Render(line), "\n")...)
+	for _, l := range w.lines {
+		text := l.text
+		if lay.timestamps && !l.at.IsZero() {
+			text = timestamp(l.at) + " " + text
+		}
+		rows = append(rows, strings.Split(wrap.Render(text), "\n")...)
 	}
 
 	maxScroll := max(0, len(rows)-contentHeight)
@@ -1028,75 +1228,95 @@ func (s *sessionModel) windowView(width, height int) string {
 	}
 	end := len(rows) - w.scroll
 	start := max(0, end-contentHeight)
-	visible := rows[start:end]
-
-	var sub string
-	switch w.kind {
-	case winChat:
-		if w.room != nil {
-			sub = fmt.Sprintf("%d in room: %s", len(w.room.Users()), strings.Join(w.room.Users(), ", "))
-		}
-	case winIM:
-		if info, ok := s.online[client.NormalizeScreenName(w.peer)]; ok {
-			sub = info.ScreenName + " is online"
-			if info.Away {
-				sub += " (away)"
-			}
-		} else {
-			sub = w.peer + " is offline"
-		}
-	}
-	if w.scroll > 0 {
-		sub = fmt.Sprintf("scrolled up %d lines (PgDn to return)", w.scroll)
-	}
-	subLine := lipgloss.NewStyle().MaxWidth(width).Render(dimStyle.Render(sub))
-
-	content := strings.Join(visible, "\n")
 	// pad so the content sits at the bottom of the pane, like a chat log
-	if pad := contentHeight - len(visible); pad > 0 {
-		content = strings.Repeat("\n", pad) + content
+	lines := padLines(rows[start:end], contentHeight)
+
+	switch headRows {
+	case 2:
+		lines = append([]string{s.tabsView(x, y, width), truncate(dimStyle.Render(s.subLine(w)), width)}, lines...)
+	case 1:
+		var scrolled string
+		if w.scroll > 0 {
+			scrolled = dimStyle.Render(fmt.Sprintf(" ↑%d", w.scroll))
+		}
+		lines = append([]string{s.tabsView(x, y, width-lipgloss.Width(scrolled)) + scrolled}, lines...)
 	}
-	return tabs + "\n" + subLine + "\n" + content
+	return strings.Join(lines, "\n")
 }
 
 func (s *sessionModel) editorView(width, height int) string {
-	title := titleStyle.Render("Edit profile") + dimStyle.Render("  Ctrl+S: save • Esc: cancel")
-	editorHeight := max(3, height/2-1)
-	s.editor.SetWidth(width)
-	s.editor.SetHeight(editorHeight)
-
-	previewHeight := height - editorHeight - 3
-	preview := lipgloss.NewStyle().Width(width).Render(s.render(s.editor.Value()))
-	previewLines := strings.Split(preview, "\n")
-	if len(previewLines) > previewHeight {
-		previewLines = previewLines[:max(0, previewHeight)]
+	var lines []string
+	if height >= 3 {
+		lines = append(lines, fit(width,
+			titleStyle.Render("Edit profile")+dimStyle.Render("  Ctrl+S: save • Esc: cancel"),
+			titleStyle.Render("Profile")+dimStyle.Render(" ^S: save • Esc"),
+			dimStyle.Render("^S: save • Esc"),
+		))
 	}
-	return title + "\n" + s.editor.View() + "\n" + groupStyle.Render("Preview") + "\n" + strings.Join(previewLines, "\n")
+
+	// the preview needs room below the editor
+	rest := height - len(lines)
+	editorHeight, previewHeight := rest, 0
+	if rest >= 8 {
+		editorHeight = rest / 2
+		previewHeight = rest - editorHeight - 1
+	}
+	s.editor.SetWidth(width)
+	s.editor.SetHeight(max(1, editorHeight))
+	lines = append(lines, s.editor.View())
+
+	if previewHeight > 0 {
+		preview := lipgloss.NewStyle().Width(width).Render(s.render(s.editor.Value()))
+		previewLines := strings.Split(preview, "\n")
+		lines = append(lines, groupStyle.Render("Preview"))
+		lines = append(lines, previewLines[:min(len(previewLines), previewHeight)]...)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (s *sessionModel) inputView(width int) string {
 	w := s.current()
-	var prompt string
+	var prompt, name string
 	switch w.kind {
 	case winIM:
-		prompt = "to " + w.peer
+		prompt, name = " to "+w.peer+"> ", w.peer
 	case winChat:
-		prompt = w.title
+		prompt, name = " "+w.title+"> ", w.title
 	default:
-		prompt = "command"
+		prompt = " command> "
 	}
+	// the prompt gives way to the text being typed
+	limit := width / 3
+	if name != "" && lipgloss.Width(prompt) > limit && limit >= 6 {
+		prompt = name + "> "
+		if lipgloss.Width(prompt) > limit {
+			prompt = truncate(name, limit-3) + "…> "
+		}
+	}
+	prompt = fit(limit, prompt, "> ")
 	if s.focus == focusInput {
-		prompt = focusedLabelStyle.Render(prompt + "> ")
+		prompt = focusedLabelStyle.Render(prompt)
 	} else {
-		prompt = dimStyle.Render(prompt + "> ")
+		prompt = dimStyle.Render(prompt)
 	}
-	s.input.Width = max(10, width-lipgloss.Width(prompt)-2)
-	return " " + prompt + s.input.View()
+	s.input.Width = max(1, width-lipgloss.Width(prompt)-1)
+	return prompt + s.input.View()
 }
 
-func (s *sessionModel) helpLine() string {
+// helpLines are the key help line, from longest to shortest.
+func (s *sessionModel) helpLines() []string {
 	if s.focus == focusBuddies {
-		return " ↑/↓: select • Enter: IM • i: info • w/W: warn/anon • b: block • d: remove • Tab: input"
+		return []string{
+			" ↑/↓: select • Enter: IM • i: info • w/W: warn/anon • b: block • d: remove • Tab: input",
+			" Enter: IM • i: info • w: warn • b: block • d: remove • Tab: input",
+			" Enter/i/w/b/d • Tab: input",
+			" Tab: input",
+		}
 	}
-	return " Tab: buddy list • Ctrl+N/P: switch window • Ctrl+W: close • PgUp/PgDn: scroll • /help • Ctrl+C: quit"
+	return []string{
+		" Tab: buddy list • Ctrl+N/P: switch window • Ctrl+W: close • PgUp/PgDn: scroll • /help • Ctrl+C: quit",
+		" Tab: buddies • ^N/^P: windows • ^W: close • /help",
+		" Tab: buddies • /help",
+		" /help",
+	}
 }

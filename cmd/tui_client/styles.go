@@ -35,6 +35,11 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(dimColor)
 	focusedPaneStyle = paneStyle.BorderForeground(accentColor)
+	// separatorStyle sets the buddy list off from the main pane when the
+	// panes have no borders.
+	separatorStyle = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), false, true, false, false).
+			BorderForeground(dimColor)
 
 	activeTabStyle   = lipgloss.NewStyle().Bold(true).Foreground(accentColor).Underline(true)
 	inactiveTabStyle = lipgloss.NewStyle().Foreground(dimColor)
