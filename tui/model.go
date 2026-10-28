@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"crypto/tls"
@@ -7,20 +7,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// loginArgs are the sign-on settings given on the command line.
-type loginArgs struct {
-	server, screenName, password string
-	// ssl requires or disables SSL for the sign-on, overriding the saved
+// LoginArgs are the sign-on settings given on the command line.
+type LoginArgs struct {
+	Server, ScreenName, Password string
+	// SSL requires or disables SSL for the sign-on, overriding the saved
 	// account. It's nil if not given.
-	ssl *bool
-	// tlsConfig is the TLS config for SSL connections.
-	tlsConfig *tls.Config
+	SSL *bool
+	// TLSConfig is the TLS config for SSL connections.
+	TLSConfig *tls.Config
 }
 
 // model is the root of the TUI. It shows the sign-on screen until the user
 // signs on, then the session screen.
 type model struct {
-	cfg    *config
+	cfg    *Config
 	logger *slog.Logger
 	plain  bool
 
@@ -30,7 +30,9 @@ type model struct {
 	session *sessionModel
 }
 
-func newModel(cfg *config, logger *slog.Logger, plain bool, args loginArgs) model {
+// New returns the root model of the TUI, which starts at the sign-on screen.
+// If args has the server, screen name and password, it signs on right away.
+func New(cfg *Config, logger *slog.Logger, plain bool, args LoginArgs) tea.Model {
 	return model{
 		cfg:    cfg,
 		logger: logger,

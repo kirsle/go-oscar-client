@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"encoding/json"
@@ -34,8 +34,8 @@ func (a account) matches(server, screenName string) bool {
 	return a.Server == server && client.NormalizeScreenName(a.ScreenName) == client.NormalizeScreenName(screenName)
 }
 
-// config is the TUI client's saved settings.
-type config struct {
+// Config is the TUI client's saved settings.
+type Config struct {
 	// LastServer and LastScreenName identify the last account used, which
 	// is preselected at the next start.
 	LastServer     string    `json:"last_server,omitempty"`
@@ -45,9 +45,9 @@ type config struct {
 	path string
 }
 
-// defaultConfigPath returns the config file location in the user's config
+// DefaultConfigPath returns the config file location in the user's config
 // directory.
-func defaultConfigPath() string {
+func DefaultConfigPath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		dir = "."
@@ -55,10 +55,10 @@ func defaultConfigPath() string {
 	return filepath.Join(dir, "go-oscar-tui", "config.json")
 }
 
-// loadConfig reads the config file at path. A missing file yields an empty
+// LoadConfig reads the config file at path. A missing file yields an empty
 // config.
-func loadConfig(path string) (*config, error) {
-	cfg := &config{path: path}
+func LoadConfig(path string) (*Config, error) {
+	cfg := &Config{path: path}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return cfg, nil
@@ -74,7 +74,7 @@ func loadConfig(path string) (*config, error) {
 
 // save writes the config file. The file may hold passwords, so it's only
 // readable by the user.
-func (c *config) save() error {
+func (c *Config) save() error {
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
 		return err
 	}
@@ -90,7 +90,7 @@ func (c *config) save() error {
 }
 
 // find returns the saved account for server and screenName.
-func (c *config) find(server, screenName string) *account {
+func (c *Config) find(server, screenName string) *account {
 	for i := range c.Accounts {
 		if c.Accounts[i].matches(server, screenName) {
 			return &c.Accounts[i]
@@ -100,7 +100,7 @@ func (c *config) find(server, screenName string) *account {
 }
 
 // last returns the index of the last account used, or -1.
-func (c *config) last() int {
+func (c *Config) last() int {
 	for i, a := range c.Accounts {
 		if a.matches(c.LastServer, c.LastScreenName) {
 			return i
@@ -111,7 +111,7 @@ func (c *config) last() int {
 
 // remember records a successful signon. The password is saved only if
 // savePassword is set; otherwise any saved password is forgotten.
-func (c *config) remember(server, screenName, password string, savePassword, ssl bool) *account {
+func (c *Config) remember(server, screenName, password string, savePassword, ssl bool) *account {
 	a := c.find(server, screenName)
 	if a == nil {
 		c.Accounts = append(c.Accounts, account{Server: server})
@@ -129,7 +129,7 @@ func (c *config) remember(server, screenName, password string, savePassword, ssl
 }
 
 // remove forgets the account at index i.
-func (c *config) remove(i int) {
+func (c *Config) remove(i int) {
 	if i < 0 || i >= len(c.Accounts) {
 		return
 	}

@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"fmt"
@@ -36,7 +36,7 @@ func assertFits(t *testing.T, view string, width, height int) {
 }
 
 func newTestSession() *sessionModel {
-	s := newSessionModel(&config{}, signedOnMsg{
+	s := newSessionModel(&Config{}, signedOnMsg{
 		client:     &client.Client{},
 		server:     "127.0.0.1:5190",
 		screenName: "alice",
@@ -114,11 +114,11 @@ func TestLoginView_fits(t *testing.T) {
 			for _, size := range sizes {
 				width, height := size[0], size[1]
 				t.Run(fmt.Sprintf("%d accounts %q %dx%d", accounts, status, width, height), func(t *testing.T) {
-					cfg := &config{}
+					cfg := &Config{}
 					for i := range accounts {
 						cfg.Accounts = append(cfg.Accounts, account{Server: "127.0.0.1:5190", ScreenName: fmt.Sprintf("user%d", i), Password: "x"})
 					}
-					l := newLoginModel(cfg, nil, loginArgs{})
+					l := newLoginModel(cfg, nil, LoginArgs{})
 					l.status = status
 					view := l.view(width, height)
 					assertFits(t, view, width, height)
@@ -140,7 +140,7 @@ func TestSessionView_emptyBuddyListHint(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := newSessionModel(&config{}, signedOnMsg{client: &client.Client{}, screenName: "alice"}, true)
+			s := newSessionModel(&Config{}, signedOnMsg{client: &client.Client{}, screenName: "alice"}, true)
 			s.focus = tt.focus
 			view := s.view(tt.width, tt.height)
 			assertFits(t, view, tt.width, tt.height)
@@ -207,11 +207,11 @@ func TestLoginView_box(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &config{}
+			cfg := &Config{}
 			for i := range 3 {
 				cfg.Accounts = append(cfg.Accounts, account{Server: "127.0.0.1:5190", ScreenName: fmt.Sprintf("user%d", i), Password: "x"})
 			}
-			l := newLoginModel(cfg, nil, loginArgs{})
+			l := newLoginModel(cfg, nil, LoginArgs{})
 			l.status = "Sign on failed: connection refused"
 			view := l.view(tt.width, tt.height)
 			assertFits(t, view, tt.width, tt.height)

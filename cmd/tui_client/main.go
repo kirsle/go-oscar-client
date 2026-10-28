@@ -22,6 +22,8 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/kirsle/go-oscar-client/tui"
 )
 
 func main() {
@@ -29,7 +31,7 @@ func main() {
 		server     = flag.String("server", "", "OSCAR server address (host:port)")
 		screenName = flag.String("screenname", "", "screen name to sign on with")
 		password   = flag.String("password", "", "password to sign on with")
-		configPath = flag.String("config", defaultConfigPath(), "path of the config file that remembers screen names")
+		configPath = flag.String("config", tui.DefaultConfigPath(), "path of the config file that remembers screen names")
 		plain      = flag.Bool("plain", false, "strip HTML formatting instead of rendering it with terminal colors")
 		logPath    = flag.String("log", "", "write debug logs to this file")
 		mouse      = flag.Bool("mouse", true, "make tabs and buddies clickable; most terminals then need Shift held to select text")
@@ -58,7 +60,7 @@ func main() {
 		logger = slog.New(slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}
 
-	cfg, err := loadConfig(*configPath)
+	cfg, err := tui.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unable to load config: %v\n", err)
 		os.Exit(1)
@@ -70,12 +72,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	m := newModel(cfg, logger, *plain, loginArgs{
-		server:     *server,
-		screenName: *screenName,
-		password:   *password,
-		ssl:        sslArg,
-		tlsConfig:  tlsConfig,
+	m := tui.New(cfg, logger, *plain, tui.LoginArgs{
+		Server:     *server,
+		ScreenName: *screenName,
+		Password:   *password,
+		SSL:        sslArg,
+		TLSConfig:  tlsConfig,
 	})
 	opts := []tea.ProgramOption{tea.WithAltScreen()}
 	if *mouse {

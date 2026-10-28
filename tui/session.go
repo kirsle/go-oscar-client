@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -128,7 +128,7 @@ type infoMsg struct {
 
 // sessionModel is the screen shown while signed on.
 type sessionModel struct {
-	cfg        *config
+	cfg        *Config
 	client     *client.Client
 	server     string
 	screenName string
@@ -167,7 +167,7 @@ type sessionModel struct {
 	rateLimited bool
 }
 
-func newSessionModel(cfg *config, msg signedOnMsg, plain bool) *sessionModel {
+func newSessionModel(cfg *Config, msg signedOnMsg, plain bool) *sessionModel {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &sessionModel{
 		cfg:         cfg,

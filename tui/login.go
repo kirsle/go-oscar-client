@@ -1,4 +1,4 @@
-package main
+package tui
 
 import (
 	"context"
@@ -54,7 +54,7 @@ const (
 
 // loginModel is the sign-on screen.
 type loginModel struct {
-	cfg    *config
+	cfg    *Config
 	logger *slog.Logger
 
 	cursor       int
@@ -69,10 +69,10 @@ type loginModel struct {
 	autoSignon bool
 }
 
-func newLoginModel(cfg *config, logger *slog.Logger, args loginArgs) *loginModel {
+func newLoginModel(cfg *Config, logger *slog.Logger, args LoginArgs) *loginModel {
 	// SSL is required unless a saved account or the command line says
 	// otherwise
-	l := &loginModel{cfg: cfg, logger: logger, ssl: true, tlsConfig: args.tlsConfig}
+	l := &loginModel{cfg: cfg, logger: logger, ssl: true, tlsConfig: args.TLSConfig}
 	for i := focusServer; i <= focusPassword; i++ {
 		in := textinput.New()
 		in.Prompt = ""
@@ -96,25 +96,25 @@ func newLoginModel(cfg *config, logger *slog.Logger, args loginArgs) *loginModel
 	}
 
 	// command line flags override the saved account
-	if args.server != "" {
-		l.inputs[focusServer].SetValue(args.server)
+	if args.Server != "" {
+		l.inputs[focusServer].SetValue(args.Server)
 	}
-	if args.screenName != "" {
-		l.inputs[focusScreenName].SetValue(args.screenName)
-		if args.password == "" {
+	if args.ScreenName != "" {
+		l.inputs[focusScreenName].SetValue(args.ScreenName)
+		if args.Password == "" {
 			l.inputs[focusPassword].SetValue("")
-			if a := cfg.find(l.value(focusServer), args.screenName); a != nil {
+			if a := cfg.find(l.value(focusServer), args.ScreenName); a != nil {
 				l.inputs[focusPassword].SetValue(a.Password)
 			}
 		}
 	}
-	if args.password != "" {
-		l.inputs[focusPassword].SetValue(args.password)
+	if args.Password != "" {
+		l.inputs[focusPassword].SetValue(args.Password)
 	}
-	if args.ssl != nil {
-		l.ssl = *args.ssl
+	if args.SSL != nil {
+		l.ssl = *args.SSL
 	}
-	l.autoSignon = args.screenName != "" && l.value(focusPassword) != ""
+	l.autoSignon = args.ScreenName != "" && l.value(focusPassword) != ""
 
 	switch {
 	case l.value(focusScreenName) == "":
