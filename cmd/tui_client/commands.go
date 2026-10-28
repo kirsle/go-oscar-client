@@ -39,11 +39,14 @@ var helpText = []string{
 	"  /close                   close the current window",
 	"  /signoff                 sign off and return to the sign-on screen",
 	"  /quit                    sign off and exit",
-	"Keys: Tab toggles the buddy list, Ctrl+N/Ctrl+P switch windows, Ctrl+W closes",
-	"a window, PgUp/PgDn scroll. In the buddy list: Enter IMs, i shows info, w warns,",
-	"b blocks or unblocks, d removes. On small terminals, the buddy list replaces",
+	"Keys: F10 or Alt+M opens the menu, which does most of what the commands do.",
+	"Tab toggles the buddy list, Ctrl+N/Ctrl+P switch windows, Ctrl+W closes a",
+	"window, PgUp/PgDn scroll. In the buddy list: Enter IMs, i shows info, w warns,",
+	"b blocks or unblocks, d removes, a adds a buddy. With the mouse, click the",
+	"Go OSCAR title for the menu, and click tabs, buddies, the keys at the bottom",
+	"and the links under the tabs. On small terminals, the buddy list replaces",
 	"the conversation while it has focus, and parts of the screen are hidden; the",
-	"commands above do everything the hidden parts do.",
+	"menu and the commands above do everything the hidden parts do.",
 	"Messages may contain formatting HTML such as <b>bold</b>, <i>, <u>, <s>,",
 	"<font color=\"red\">, <a href=\"...\"> and <br>. Other text is sent as typed.",
 }
@@ -103,6 +106,9 @@ func (s *sessionModel) runCommand(line string) tea.Cmd {
 	case "/buddies", "/buddylist", "/bl":
 		w := s.current()
 		for _, row := range s.buddyRows {
+			if row.action != nil {
+				continue // buttons
+			}
 			text := row.text
 			if row.screenName != "" {
 				text = "  " + text
