@@ -84,6 +84,7 @@ go run ./cmd/tui_client -server 127.0.0.1:5190 -screenname alice -password secre
 | `-password`   | Password to sign on with                                              |
 | `-config`     | Config file path, default `<user config dir>/go-oscar-tui/config.json` |
 | `-plain`      | Strip HTML from messages instead of rendering it with terminal colors |
+| `-mouse`      | Make tabs and buddies clickable (default); `-mouse=false` to disable  |
 | `-log`        | Write debug logs, including every SNAC sent and received, to a file    |
 
 ### Features
@@ -114,6 +115,11 @@ go run ./cmd/tui_client -server 127.0.0.1:5190 -screenname alice -password secre
 In the buddy list, `Enter` opens an IM, `i` shows info, `w`/`W` warns
 (normally/anonymously), `b` blocks or unblocks, and `d` removes a buddy.
 
+The mouse works too: click a window's tab to switch to it, click a buddy to
+select them and click again to open an IM, and scroll with the wheel. While
+the client has the mouse, most terminals need `Shift` held to select text;
+run with `-mouse=false` to leave the mouse to the terminal.
+
 Type `/help` for every command. The main ones:
 
 ```
@@ -121,8 +127,20 @@ Type `/help` for every command. The main ones:
 /block <name>            /unblock <name>     /blocks               /warn [name]
 /away [message]          /back               /profile              /font
 /join <room>             /invite <name>      /accept               /leave
+/buddies                 /windows            /win <number|name>    /next  /prev
 /signoff                 /quit
 ```
+
+### Small terminals
+
+The screen adapts to the terminal size, down to 16 columns by 2 rows. As the
+terminal shrinks, the buddy list narrows and then is hidden (`Tab` shows it in
+place of the conversation), timestamps, pane borders, the header and the key
+help are dropped, window tabs collapse to the active window, and labels are
+abbreviated. At the smallest sizes, all that's left is the latest line of
+the current window over the input line; `/buddies`, `/windows` and `/win`
+stand in for the hidden parts. The sign-on screen likewise drops its box and
+scrolls to the focused field.
 
 `/font` shows your message style. `/font help` lists the options, for example
 `/font color blue`, `/font bold`, `/font face Comic Sans MS`, `/font reset`.

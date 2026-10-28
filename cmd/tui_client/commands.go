@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/kirsle/go-oscar-client/client"
 )
 
 // helpText lists the slash commands.
@@ -14,6 +16,7 @@ var helpText = []string{
 	"Commands (screen names are typed without spaces):",
 	"  /im <name> [message]     open a conversation, optionally sending a message",
 	"  /info [name]             view a user's info and profile",
+	"  /buddies                 list your buddies and who's online",
 	"  /add <name> [group]      add a buddy (default group: Buddies)",
 	"  /remove <name>           remove a buddy",
 	"  /block <name>            block a user",
@@ -30,12 +33,17 @@ var helpText = []string{
 	"  /accept                  join the room of the last chat invitation",
 	"  /users                   list the users in the current chat room",
 	"  /leave                   leave the current chat room",
+	"  /windows                 list the open windows",
+	"  /win <number|name>       switch to a window",
+	"  /next, /prev             switch to the next or previous window",
 	"  /close                   close the current window",
 	"  /signoff                 sign off and return to the sign-on screen",
 	"  /quit                    sign off and exit",
 	"Keys: Tab toggles the buddy list, Ctrl+N/Ctrl+P switch windows, Ctrl+W closes",
 	"a window, PgUp/PgDn scroll. In the buddy list: Enter IMs, i shows info, w warns,",
-	"b blocks or unblocks, d removes.",
+	"b blocks or unblocks, d removes. On small terminals, the buddy list replaces",
+	"the conversation while it has focus, and parts of the screen are hidden; the",
+	"commands above do everything the hidden parts do.",
 	"Messages may contain formatting HTML such as <b>bold</b>, <i>, <u>, <s>,",
 	"<font color=\"red\">, <a href=\"...\"> and <br>. Other text is sent as typed.",
 }
@@ -92,6 +100,41 @@ func (s *sessionModel) runCommand(line string) tea.Cmd {
 		if sn, ok := target(); ok {
 			return s.getInfo(sn)
 		}
+	case "/buddies", "/buddylist", "/bl":
+		w := s.current()
+		for _, row := range s.buddyRows {
+			text := row.text
+			if row.screenName != "" {
+				text = "  " + text
+			}
+			w.add(text)
+		}
+	case "/windows", "/wins":
+		w := s.current()
+		for i, win := range s.windows {
+			text := fmt.Sprintf("%d. %s", i+1, win.title)
+			switch {
+			case i == s.active:
+				text = activeTabStyle.Render(text)
+			case win.unread:
+				text = unreadTabStyle.Render(text + "*")
+			}
+			w.add(text)
+		}
+	case "/win", "/window", "/switch":
+		if rest == "" {
+			s.notify("Usage: /win <number or name>. /windows lists them.", true)
+			return nil
+		}
+		if w := s.findWindow(rest); w != nil {
+			s.activate(w)
+		} else {
+			s.notify(fmt.Sprintf("No window %q. /windows lists them.", rest), true)
+		}
+	case "/next":
+		s.activate(s.windows[(s.active+1)%len(s.windows)])
+	case "/prev":
+		s.activate(s.windows[(s.active-1+len(s.windows))%len(s.windows)])
 	case "/add":
 		if len(args) == 0 {
 			s.notify("Usage: /add <screen name> [group]", true)
@@ -217,6 +260,24 @@ func (s *sessionModel) runCommand(line string) tea.Cmd {
 		return tea.Quit
 	default:
 		s.notify(fmt.Sprintf("Unknown command %s. Type /help for a list of commands.", cmd), true)
+	}
+	return nil
+}
+
+// findWindow finds a window by its number in /windows or by its title or
+// correspondent, case insensitively.
+func (s *sessionModel) findWindow(name string) *window {
+	if n, err := strconv.Atoi(name); err == nil {
+		if n >= 1 && n <= len(s.windows) {
+			return s.windows[n-1]
+		}
+		return nil
+	}
+	norm := client.NormalizeScreenName(strings.TrimPrefix(name, "#"))
+	for _, w := range s.windows {
+		if client.NormalizeScreenName(strings.TrimPrefix(w.title, "#")) == norm || client.NormalizeScreenName(w.peer) == norm {
+			return w
+		}
 	}
 	return nil
 }

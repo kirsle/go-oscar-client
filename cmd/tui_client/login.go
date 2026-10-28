@@ -69,7 +69,6 @@ func newLoginModel(cfg *config, logger *slog.Logger, args loginArgs) *loginModel
 	for i := focusServer; i <= focusPassword; i++ {
 		in := textinput.New()
 		in.Prompt = ""
-		in.Width = 32
 		in.CharLimit = 64
 		l.inputs[i] = in
 	}
@@ -314,78 +313,225 @@ func (l *loginModel) update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
+// formStyle is how much the sign-on form is decorated.
+type formStyle struct {
+	// padY and padX pad the inside of the box.
+	padY, padX int
+	// gaps puts blank lines between the parts of the form.
+	gaps bool
+	// underline underlines the text fields.
+	underline bool
+	// allAccounts lists every saved screen name, instead of only the
+	// selected one.
+	allAccounts bool
+}
+
+// formStyles are the ways to draw the sign-on form in a box, from the most
+// decorated to the least. The form is drawn the first way that fits the
+// terminal, or without the box if none does.
+var formStyles = []formStyle{
+	{padY: 1, padX: 2, gaps: true, underline: true, allAccounts: true},
+	{padY: 0, padX: 2, gaps: true, underline: true, allAccounts: true},
+	{padY: 0, padX: 2, gaps: true, allAccounts: true},
+	{padY: 0, padX: 1, allAccounts: true},
+	{padY: 0, padX: 1},
+}
+
 func (l *loginModel) view(width, height int) string {
-	var b strings.Builder
-
-	b.WriteString(titleStyle.Render("Go OSCAR — Sign On"))
-	b.WriteString("\n\n")
-
-	if len(l.cfg.Accounts) > 0 {
-		label := "Saved screen names"
-		if l.focus == focusAccounts {
-			label = focusedLabelStyle.Render(label)
-		} else {
-			label = labelStyle.Render(label)
+	for _, st := range formStyles {
+		if box, ok := l.boxView(width, height, st); ok {
+			return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
 		}
-		b.WriteString(label + "\n")
-		for i, a := range l.cfg.Accounts {
-			line := fmt.Sprintf("%s @ %s", a.ScreenName, a.Server)
-			if a.Password != "" {
-				line += dimStyle.Render("  (password saved)")
-			}
-			if i == l.cursor {
-				marker := "  "
-				if l.focus == focusAccounts {
-					marker = "> "
-					line = selectedStyle.Render(line)
-				}
-				b.WriteString(marker + line + "\n")
-			} else {
-				b.WriteString("  " + line + "\n")
-			}
-		}
-		b.WriteString("\n")
 	}
+	return l.compactView(width, height)
+}
 
+// boxView renders the sign-on form in a box drawn in style st, if the box
+// fits.
+func (l *loginModel) boxView(width, height int, st formStyle) (string, bool) {
+	boxWidth := min(72, width-2)
+	inner := boxWidth - 2*st.padX
 	labels := map[int]string{
 		focusServer:     "Server",
 		focusScreenName: "Screen name",
 		focusPassword:   "Password",
 	}
-	for f := focusServer; f <= focusPassword; f++ {
-		label := fmt.Sprintf("%-12s", labels[f])
-		if l.focus == f {
-			label = focusedLabelStyle.Render(label)
-		} else {
-			label = labelStyle.Render(label)
-		}
-		b.WriteString(label + " " + inputBoxStyle.Render(l.inputs[f].View()) + "\n")
+	labelWidth := 12
+	if inner-labelWidth-2 < 20 {
+		labels[focusScreenName] = "Name"
+		labelWidth = 9
+	}
+	inputWidth := min(32, inner-labelWidth-2)
+	if inputWidth < 10 {
+		return "", false
 	}
 
-	check := "[ ]"
-	if l.savePassword {
-		check = "[x]"
+	var lines []string
+	gap := func() {
+		if st.gaps {
+			lines = append(lines, "")
+		}
 	}
-	saveLine := check + " Save password"
-	if l.focus == focusSavePassword {
-		saveLine = focusedLabelStyle.Render(saveLine)
+	label := func(text string, focused bool) string {
+		text = fmt.Sprintf("%-*s", labelWidth, text)
+		if focused {
+			return focusedLabelStyle.Render(text)
+		}
+		return labelStyle.Render(text)
 	}
-	b.WriteString("\n" + saveLine + "\n\n")
+
+	lines = append(lines, titleStyle.Render(fit(inner, "Go OSCAR — Sign On", "Sign On")))
+	gap()
+
+	if len(l.cfg.Accounts) > 0 && st.allAccounts {
+		lines = append(lines, label("Saved screen names", l.focus == focusAccounts))
+		for i, a := range l.cfg.Accounts {
+			line := fmt.Sprintf("%s @ %s", a.ScreenName, a.Server)
+			if a.Password != "" {
+				line += dimStyle.Render("  (password saved)")
+			}
+			marker := "  "
+			if i == l.cursor && l.focus == focusAccounts {
+				marker = "> "
+				line = selectedStyle.Render(line)
+			}
+			lines = append(lines, truncate(marker+line, inner))
+		}
+		gap()
+	} else if len(l.cfg.Accounts) > 0 && l.cursor >= 0 {
+		// only the selected screen name, which ↑/↓ changes
+		a := l.cfg.Accounts[l.cursor]
+		count := dimStyle.Render(fmt.Sprintf(" %d/%d", l.cursor+1, len(l.cfg.Accounts)))
+		line := truncate(fmt.Sprintf("%s @ %s", a.ScreenName, a.Server), inner-labelWidth-1-lipgloss.Width(count))
+		if l.focus == focusAccounts {
+			line = selectedStyle.Render(line)
+		}
+		lines = append(lines, truncate(label("Saved", l.focus == focusAccounts)+" "+line+count, inner))
+	}
+
+	for f := focusServer; f <= focusPassword; f++ {
+		l.inputs[f].Width = inputWidth
+		input := l.inputs[f].View()
+		if st.underline {
+			input = inputBoxStyle.Render(input)
+		}
+		lines = append(lines, label(labels[f], l.focus == f)+" "+input)
+	}
+
+	gap()
+	lines = append(lines, l.saveView("Save password"))
+	gap()
 
 	if l.status != "" {
-		style := statusStyle
-		if strings.HasPrefix(l.status, "Sign on failed") || strings.HasPrefix(l.status, "Disconnected") {
-			style = errorStyle
-		}
-		b.WriteString(style.Render(l.status) + "\n\n")
+		lines = append(lines, lipgloss.NewStyle().Width(inner).Render(l.statusView()))
+		gap()
 	}
 
 	help := "Enter: sign on • Tab: next field • Space: toggle • Esc: quit"
 	if len(l.cfg.Accounts) > 0 {
 		help += " • Del: forget saved screen name"
 	}
-	b.WriteString(dimStyle.Render(help))
+	if st.padY > 0 {
+		// wrapped by the box
+		lines = append(lines, dimStyle.Render(help))
+	} else {
+		lines = append(lines, dimStyle.Render(fit(inner,
+			help,
+			"Enter: sign on • Tab: next field • Esc: quit",
+			"Enter: sign on • Tab • Esc",
+		)))
+	}
 
-	box := boxStyle.Width(min(72, width-4)).Render(b.String())
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+	box := boxStyle.Padding(st.padY, st.padX).Width(boxWidth).Render(strings.Join(lines, "\n"))
+	return box, lipgloss.Height(box) <= height
+}
+
+// compactView renders the sign-on form without the box, abbreviated to the
+// terminal width and scrolled to the focused field, for terminals too small
+// for the box.
+func (l *loginModel) compactView(width, height int) string {
+	var lines []string
+	focusLine := 0
+
+	lines = append(lines, titleStyle.Render(fit(width, "Go OSCAR — Sign On", "Sign On")))
+
+	if len(l.cfg.Accounts) > 0 {
+		label := fit(width, "Saved screen names", "Saved")
+		if l.focus == focusAccounts {
+			focusLine = len(lines)
+			label = focusedLabelStyle.Render(label)
+		}
+		lines = append(lines, label)
+		for i, a := range l.cfg.Accounts {
+			marker, line := "  ", truncate(fmt.Sprintf("%s @ %s", a.ScreenName, a.Server), width-2)
+			if i == l.cursor && l.focus == focusAccounts {
+				focusLine = len(lines)
+				marker, line = "> ", selectedStyle.Render(line)
+			}
+			lines = append(lines, truncate(marker+line, width))
+		}
+	}
+
+	labels := map[int][2]string{
+		focusServer:     {"Server", "Host"},
+		focusScreenName: {"Screen name", "Name"},
+		focusPassword:   {"Password", "Pass"},
+	}
+	for f := focusServer; f <= focusPassword; f++ {
+		label := fmt.Sprintf("%-12s", labels[f][0])
+		if width < 40 {
+			label = fmt.Sprintf("%-5s", labels[f][1])
+		}
+		if l.focus == f {
+			focusLine = len(lines)
+			label = focusedLabelStyle.Render(label)
+		}
+		l.inputs[f].Width = max(1, width-lipgloss.Width(label)-1)
+		lines = append(lines, truncate(label+l.inputs[f].View(), width))
+	}
+
+	if l.focus == focusSavePassword {
+		focusLine = len(lines)
+	}
+	lines = append(lines, truncate(l.saveView(fit(width-4, "Save password", "Save")), width))
+	lines = append(lines, dimStyle.Render(fit(width,
+		"Enter: sign on • Tab: next field • Space: toggle • Esc: quit",
+		"Enter: sign on • Tab • Esc",
+		"Enter • Tab • Esc",
+	)))
+
+	// the status, such as why signing on failed, stays in view below the
+	// focused field
+	var status []string
+	if l.status != "" {
+		status = strings.Split(lipgloss.NewStyle().Width(width).Render(l.statusView()), "\n")
+		// but leaves room for the form
+		status = status[:min(len(status), max(1, height/2), max(0, height-1))]
+	}
+	if room := height - len(status); len(lines) > room {
+		start := min(max(0, focusLine-room/2), len(lines)-room)
+		lines = lines[start : start+room]
+	}
+	return strings.Join(append(lines, status...), "\n")
+}
+
+// saveView renders the save password checkbox.
+func (l *loginModel) saveView(label string) string {
+	check := "[ ]"
+	if l.savePassword {
+		check = "[x]"
+	}
+	line := check + " " + label
+	if l.focus == focusSavePassword {
+		line = focusedLabelStyle.Render(line)
+	}
+	return line
+}
+
+func (l *loginModel) statusView() string {
+	style := statusStyle
+	if strings.HasPrefix(l.status, "Sign on failed") || strings.HasPrefix(l.status, "Disconnected") {
+		style = errorStyle
+	}
+	return style.Render(l.status)
 }
