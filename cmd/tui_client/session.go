@@ -1194,7 +1194,11 @@ func (s *sessionModel) subLine(w *window) string {
 			}
 			return info.ScreenName + " is online"
 		}
-		return w.peer + " is offline"
+		if s.client.IsBuddy(w.peer) {
+			// presence is only tracked for buddies, so a non-buddy's
+			// status is unknown
+			return w.peer + " is offline"
+		}
 	}
 	return ""
 }
