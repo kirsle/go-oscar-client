@@ -1,7 +1,7 @@
 # Go OSCAR Client
 
-An OSCAR (AOL Instant Messenger) instant messaging client written in Go: a
-reusable client library and an interactive terminal client built on it.
+An OSCAR (AOL Instant Messenger) client written in Go: a reusable client
+library and an interactive terminal client built on it.
 
 It speaks the OSCAR protocol used by classic AIM clients and is developed
 against [Open OSCAR Server](https://github.com/mk6i/open-oscar-server), whose
@@ -10,6 +10,32 @@ handshake of real AIM 5.x clients, so it should work with other OSCAR servers
 too.
 
 It has also been tested to work on the [NINA.chat OSCAR server](https://nina.chat).
+
+## Screenshots
+
+This project includes a terminal TUI client program for OSCAR.
+
+The login screen allows you to set the server, screen name and password, which
+can optionally be remembered, and your settings are saved to disk with servers
+and screen names remembered.
+
+![The login screen](screenshots/login.png)
+
+HTML formatting for messages and profile pages works by translating the HTML
+tags into ANSI codes. It is possible to manually write HTML in your messages,
+or use the `/font` command to set your persistent font styles. Sequences that
+are not valid HTML within the subset of tags supported by AIM will be sent
+escaped, so sequences like `<3` still send correctly as part of your message.
+
+![Instant messages with HTML formatting support](screenshots/chat.png)
+
+The main menu with contextual options:
+
+![The status screen and help menu](screenshots/menu.png)
+
+The status screen and /help command:
+
+![The status tab and output from the /help command](screenshots/help.png)
 
 ## Disclaimer: This project is written using A.I.
 
@@ -50,28 +76,6 @@ If you have an interest in OSCAR clients, it would be greatly appreciated if
 you could contribute one to the [Open OSCAR Server](https://github.com/mk6i/open-oscar-server)
 and then I could label this repository as obsolete in favor of an upstream
 client library that could be used instead.
-
-## Screenshots
-
-This project includes a terminal TUI client program for OSCAR.
-
-The login screen allows you to set the server, screen name and password, which
-can optionally be remembered, and your settings are saved to disk with servers
-and screen names remembered.
-
-![The login screen](screenshots/login.png)
-
-HTML formatting for messages and profile pages works by translating the HTML
-tags into ANSI codes. It is possible to manually write HTML in your messages,
-or use the `/font` command to set your persistent font styles. Sequences that
-are not valid HTML within the subset of tags supported by AIM will be sent
-escaped, so sequences like `<3` still send correctly as part of your message.
-
-![Instant messages with HTML formatting support](screenshots/im.png)
-
-Type `/help` to see available commands:
-
-![The status screen and help menu](screenshots/help.png)
 
 ## Terminal client
 
