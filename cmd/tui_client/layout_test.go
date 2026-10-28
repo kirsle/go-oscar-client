@@ -57,7 +57,7 @@ func newTestSession() *sessionModel {
 }
 
 func TestSessionView_fits(t *testing.T) {
-	for _, state := range []string{"input", "buddies", "editing", "scrolled"} {
+	for _, state := range []string{"input", "buddies", "editing", "scrolled", "menu", "prompt"} {
 		for _, size := range sizes {
 			width, height := size[0], size[1]
 			t.Run(fmt.Sprintf("%s %dx%d", state, width, height), func(t *testing.T) {
@@ -70,6 +70,10 @@ func TestSessionView_fits(t *testing.T) {
 					s.editor.SetValue("my <b>profile</b>")
 				case "scrolled":
 					s.current().scroll = 5
+				case "menu":
+					s.openMenu()
+				case "prompt":
+					s.askAddBuddy()
 				}
 				view := s.view(width, height)
 				assertFits(t, view, width, height)
@@ -142,21 +146,23 @@ func TestSessionView_emptyBuddyListHint(t *testing.T) {
 			assertFits(t, view, tt.width, tt.height)
 			// the hint is wrapped, not cut off
 			assert.Contains(t, view, "/add", view)
-			assert.Contains(t, view, "<name>", view)
+			assert.Contains(t, view, "<name>.", view)
+			assert.Contains(t, view, "+ Add buddy", view)
 		})
 	}
 }
 
-// click renders s and clicks the first place text is shown.
-func click(t *testing.T, s *sessionModel, width, height int, text string) {
+// click renders s and clicks the first place text is shown, returning the
+// command the click results in.
+func click(t *testing.T, s *sessionModel, width, height int, text string) tea.Cmd {
 	t.Helper()
 	for y, line := range strings.Split(s.view(width, height), "\n") {
 		if i := strings.Index(line, text); i >= 0 {
-			s.handleMouse(tea.MouseMsg{X: lipgloss.Width(line[:i]), Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
-			return
+			return s.handleMouse(tea.MouseMsg{X: lipgloss.Width(line[:i]), Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 		}
 	}
 	t.Fatalf("%q not shown", text)
+	return nil
 }
 
 func TestSessionView_click(t *testing.T) {

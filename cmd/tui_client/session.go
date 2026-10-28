@@ -87,6 +87,16 @@ type buddyRow struct {
 	// Only the hint shown in place of an empty buddy list is, since the
 	// buddy list scrolls by rows.
 	wrap bool
+	// action is set on button rows, such as the one that adds a buddy, which
+	// run it when clicked or chosen with Enter. label describes it in the key
+	// help.
+	action func() tea.Cmd
+	label  string
+}
+
+// selectable reports whether the buddy list cursor can be on the row.
+func (r buddyRow) selectable() bool {
+	return r.screenName != "" || r.action != nil
 }
 
 // Session pane focus.
@@ -141,6 +151,16 @@ type sessionModel struct {
 
 	// zones are the clickable parts of the screen, found as it's drawn.
 	zones []zone
+
+	// menuOpen is set while the menu drops down from the header. Its items
+	// are clickable through menuZones, and take all clicks and keys.
+	menuOpen   bool
+	menuCursor int
+	menuZones  []zone
+
+	// prompt is set while the input line asks for a value, such as the
+	// screen name of a buddy to add.
+	prompt *inputPrompt
 
 	lastInvite  *client.ChatInvite
 	awayReplied map[string]bool
@@ -324,14 +344,15 @@ func (s *sessionModel) refreshBuddies() {
 			}
 		}
 	}
+	if len(rows) == 0 {
+		rows = append(rows, buddyRow{text: dimStyle.Render("No buddies yet. Add one below or with /add <name>."), wrap: true})
+	}
+	rows = append(rows, buddyRow{text: linkStyle.Render("+ Add buddy"), action: s.askAddBuddy, label: "add buddy"})
 	if blocked := s.client.BlockList(); len(blocked) > 0 {
 		rows = append(rows, buddyRow{text: groupStyle.Render(fmt.Sprintf("Blocked (%d)", len(blocked)))})
 		for _, sn := range blocked {
 			rows = append(rows, buddyRow{text: errorStyle.Render("⊘ ") + sn, screenName: sn, blocked: true})
 		}
-	}
-	if len(rows) == 0 {
-		rows = append(rows, buddyRow{text: dimStyle.Render("No buddies. Use /add <name>"), wrap: true})
 	}
 	s.buddyRows = rows
 	s.clampBuddyCursor(1)
@@ -365,8 +386,8 @@ func idleText(minutes int) string {
 	return fmt.Sprintf("%dm", minutes)
 }
 
-// clampBuddyCursor keeps the cursor on a buddy row, moving in direction dir
-// if it's on a header.
+// clampBuddyCursor keeps the cursor on a selectable row, moving in direction
+// dir if it's on a header.
 func (s *sessionModel) clampBuddyCursor(dir int) {
 	if s.buddyCursor >= len(s.buddyRows) {
 		s.buddyCursor = len(s.buddyRows) - 1
@@ -375,13 +396,13 @@ func (s *sessionModel) clampBuddyCursor(dir int) {
 		s.buddyCursor = 0
 	}
 	for i := s.buddyCursor; i >= 0 && i < len(s.buddyRows); i += dir {
-		if s.buddyRows[i].screenName != "" {
+		if s.buddyRows[i].selectable() {
 			s.buddyCursor = i
 			return
 		}
 	}
 	for i := s.buddyCursor; i >= 0 && i < len(s.buddyRows); i -= dir {
-		if s.buddyRows[i].screenName != "" {
+		if s.buddyRows[i].selectable() {
 			s.buddyCursor = i
 			return
 		}
@@ -390,18 +411,27 @@ func (s *sessionModel) clampBuddyCursor(dir int) {
 
 func (s *sessionModel) moveBuddyCursor(dir int) {
 	for i := s.buddyCursor + dir; i >= 0 && i < len(s.buddyRows); i += dir {
-		if s.buddyRows[i].screenName != "" {
+		if s.buddyRows[i].selectable() {
 			s.buddyCursor = i
 			return
 		}
 	}
 }
 
-func (s *sessionModel) selectedBuddy() (buddyRow, bool) {
+// selectedRow returns the row under the buddy list cursor, if it's
+// selectable.
+func (s *sessionModel) selectedRow() (buddyRow, bool) {
 	if s.buddyCursor < 0 || s.buddyCursor >= len(s.buddyRows) {
 		return buddyRow{}, false
 	}
 	row := s.buddyRows[s.buddyCursor]
+	return row, row.selectable()
+}
+
+// selectedBuddy returns the buddy or blocked user under the buddy list
+// cursor, if any.
+func (s *sessionModel) selectedBuddy() (buddyRow, bool) {
+	row, _ := s.selectedRow()
 	return row, row.screenName != ""
 }
 
@@ -445,15 +475,18 @@ func (s *sessionModel) update(msg tea.Msg, width, height int) tea.Cmd {
 		s.showInfo(msg.screenName, msg.profile)
 		return nil
 	case tea.KeyMsg:
-		if s.editing {
+		switch {
+		case s.editing:
 			return s.updateEditor(msg)
+		case s.menuOpen:
+			return s.handleMenuKey(msg)
 		}
 		return s.handleKey(msg, height)
 	case tea.MouseMsg:
-		if !s.editing {
-			s.handleMouse(msg)
+		if s.editing {
+			return nil
 		}
-		return nil
+		return s.handleMouse(msg)
 	}
 
 	if s.editing {
@@ -469,14 +502,11 @@ func (s *sessionModel) update(msg tea.Msg, width, height int) tea.Cmd {
 func (s *sessionModel) handleKey(msg tea.KeyMsg, height int) tea.Cmd {
 	page := max(1, height/2)
 	switch msg.String() {
-	case "tab":
-		if s.focus == focusInput {
-			s.focus = focusBuddies
-			s.input.Blur()
-		} else {
-			s.focusInput()
-		}
+	case "f10", "alt+m":
+		s.openMenu()
 		return nil
+	case "tab":
+		return s.toggleFocus()
 	case "ctrl+n", "alt+right":
 		s.activate(s.windows[(s.active+1)%len(s.windows)])
 		return nil
@@ -500,6 +530,9 @@ func (s *sessionModel) handleKey(msg tea.KeyMsg, height int) tea.Cmd {
 
 	switch msg.String() {
 	case "enter":
+		if s.prompt != nil {
+			return s.submitPrompt()
+		}
 		line := strings.TrimSpace(s.input.Value())
 		s.input.SetValue("")
 		if line == "" {
@@ -510,6 +543,9 @@ func (s *sessionModel) handleKey(msg tea.KeyMsg, height int) tea.Cmd {
 		}
 		return s.sendToCurrent(line)
 	case "esc":
+		if s.prompt != nil {
+			return s.cancelPrompt()
+		}
 		s.input.SetValue("")
 		return nil
 	}
@@ -527,8 +563,16 @@ func (s *sessionModel) handleBuddyKey(msg tea.KeyMsg) tea.Cmd {
 	case "down", "j":
 		s.moveBuddyCursor(1)
 		return nil
+	case "a":
+		return s.askAddBuddy()
 	}
 
+	if row, ok := s.selectedRow(); ok && row.action != nil {
+		if k := msg.String(); k == "enter" || k == " " {
+			return row.action()
+		}
+		return nil
+	}
 	row, ok := s.selectedBuddy()
 	if !ok {
 		return nil
@@ -589,17 +633,37 @@ func (s *sessionModel) updateEditor(msg tea.KeyMsg) tea.Cmd {
 // mouse
 
 // handleMouse clicks the zone under the mouse or scrolls with the wheel.
-func (s *sessionModel) handleMouse(msg tea.MouseMsg) {
+// While the menu is open, a click anywhere but on its items closes it.
+func (s *sessionModel) handleMouse(msg tea.MouseMsg) tea.Cmd {
 	if msg.Action != tea.MouseActionPress {
-		return
+		return nil
+	}
+	hit := func(zones []zone) *zone {
+		for i, z := range zones {
+			if msg.Y == z.y && msg.X >= z.x && msg.X < z.x+z.width {
+				return &zones[i]
+			}
+		}
+		return nil
+	}
+	if s.menuOpen {
+		switch msg.Button {
+		case tea.MouseButtonLeft:
+			if z := hit(s.menuZones); z != nil {
+				return z.click()
+			}
+			return s.closeMenu()
+		case tea.MouseButtonWheelUp:
+			s.moveMenuCursor(s.menuItems(), -1)
+		case tea.MouseButtonWheelDown:
+			s.moveMenuCursor(s.menuItems(), 1)
+		}
+		return nil
 	}
 	switch msg.Button {
 	case tea.MouseButtonLeft:
-		for _, z := range s.zones {
-			if msg.Y == z.y && msg.X >= z.x && msg.X < z.x+z.width {
-				z.click()
-				return
-			}
+		if z := hit(s.zones); z != nil {
+			return z.click()
 		}
 	case tea.MouseButtonWheelUp:
 		if s.focus == focusBuddies {
@@ -614,10 +678,11 @@ func (s *sessionModel) handleMouse(msg tea.MouseMsg) {
 			s.current().scroll = max(0, s.current().scroll-wheelLines)
 		}
 	}
+	return nil
 }
 
 // addZone makes a part of a screen line clickable.
-func (s *sessionModel) addZone(x, y, width int, click func()) {
+func (s *sessionModel) addZone(x, y, width int, click func() tea.Cmd) {
 	s.zones = append(s.zones, zone{x: x, y: y, width: width, click: click})
 }
 
@@ -626,23 +691,40 @@ func (s *sessionModel) focusInput() {
 	s.input.Focus()
 }
 
+// toggleFocus moves the focus between the input line and the buddy list.
+func (s *sessionModel) toggleFocus() tea.Cmd {
+	if s.focus == focusInput {
+		s.focus = focusBuddies
+		s.input.Blur()
+	} else {
+		s.focusInput()
+	}
+	return nil
+}
+
 // clickWindow switches to a window clicked in the tabs.
-func (s *sessionModel) clickWindow(w *window) {
+func (s *sessionModel) clickWindow(w *window) tea.Cmd {
 	s.activate(w)
 	s.focusInput()
+	return nil
 }
 
 // clickBuddy selects a buddy clicked in the buddy list, or opens an IM with
-// them if they're already selected.
-func (s *sessionModel) clickBuddy(i int) {
+// them if they're already selected. Clicking a button row runs its action.
+func (s *sessionModel) clickBuddy(i int) tea.Cmd {
+	if row := s.buddyRows[i]; row.action != nil {
+		s.buddyCursor = i
+		return row.action()
+	}
 	if s.focus == focusBuddies && s.buddyCursor == i {
 		s.activate(s.imWindow(s.buddyRows[i].screenName))
 		s.focusInput()
-		return
+		return nil
 	}
 	s.buddyCursor = i
 	s.focus = focusBuddies
 	s.input.Blur()
+	return nil
 }
 
 // events
@@ -721,7 +803,7 @@ func (s *sessionModel) handleEvent(ev client.Event) tea.Cmd {
 		if inv.Message != "" {
 			text += ": " + htmlterm.Strip(inv.Message)
 		}
-		s.notify(text+" — type /accept to join.", false)
+		s.notify(text+" — type /accept or choose Accept invite in the menu (F10) to join.", false)
 	case client.ChatJoinedEvent:
 		w := s.open(&window{kind: winChat, key: "chat:" + ev.Room.ID(), title: "#" + ev.Room.Name()})
 		w.room = ev.Room
@@ -992,21 +1074,38 @@ func (s *sessionModel) acceptInvite(inv client.ChatInvite) tea.Cmd {
 func (s *sessionModel) view(width, height int) string {
 	lay := newLayout(width, height)
 	s.zones = s.zones[:0]
-	var top, bottom []string
+	var lines []string
 	if lay.header {
-		top = append(top, s.headerView(width))
+		lines = append(lines, s.headerView(width))
 	}
-	bottom = append(bottom, s.inputView(width))
+	top, bottom := len(lines), 1
 	if lay.help {
-		bottom = append(bottom, dimStyle.Render(fit(width, s.helpLines()...)))
+		bottom++
 	}
-	lines, inputY := top, len(top)
-	if bodyHeight := height - len(top) - len(bottom); bodyHeight > 0 {
-		lines = append(lines, s.bodyView(lay, len(top), width, bodyHeight))
+	inputY := top
+	if bodyHeight := height - top - bottom; bodyHeight > 0 {
+		lines = append(lines, s.bodyView(lay, top, width, bodyHeight))
 		inputY += bodyHeight
 	}
-	s.addZone(0, inputY, width, s.focusInput)
-	return strings.Join(append(lines, bottom...), "\n")
+	lines = append(lines, s.inputView(width))
+	s.addZone(0, inputY, width, func() tea.Cmd {
+		s.focusInput()
+		return nil
+	})
+	if lay.help {
+		lines = append(lines, " "+s.actionBar(1, inputY+1, width-1, dimStyle.Render(" • "), s.helpBars()...))
+	}
+	view := strings.Join(lines, "\n")
+	if s.menuOpen {
+		// the menu drops down from the title in the header, stopping above
+		// the input line and key help if there's room
+		menuHeight := height - top
+		if menuHeight-bottom >= 3 {
+			menuHeight -= bottom
+		}
+		view = overlay(view, s.menuView(0, top, width, menuHeight), 0, top)
+	}
+	return view
 }
 
 // bodyView renders the buddy list and the main pane in height lines, starting
@@ -1078,7 +1177,15 @@ func (s *sessionModel) headerView(width int) string {
 		rate = errorStyle.Render("rate limited")
 	}
 
-	left := " " + join(titleStyle.Render("Go OSCAR"), name, warn, state, rate)
+	// the title opens the menu
+	title := titleStyle.Render("Go OSCAR ▾")
+	if s.menuOpen {
+		title = selectedStyle.Inherit(titleStyle).Render("Go OSCAR ▾")
+	}
+	left := " " + join(title, name, warn, state, rate)
+	if lipgloss.Width(left) <= width {
+		s.addZone(1, 0, lipgloss.Width(title), s.toggleMenu)
+	}
 	right := dimStyle.Render(s.server + " ")
 	if gap := width - lipgloss.Width(left) - lipgloss.Width(right); gap >= 1 {
 		return left + strings.Repeat(" ", gap) + right
@@ -1127,11 +1234,11 @@ func (s *sessionModel) buddyListView(x, y, width, height int) string {
 			lines = append(lines, wrapped[:min(len(wrapped), height-len(lines))]...)
 			continue
 		}
-		if row.screenName != "" {
-			s.addZone(x, y+len(lines), width, func() { s.clickBuddy(i) })
+		if row.selectable() {
+			s.addZone(x, y+len(lines), width, func() tea.Cmd { return s.clickBuddy(i) })
 		}
 		text = truncate(text, width)
-		if i == s.buddyCursor && s.focus == focusBuddies && row.screenName != "" {
+		if i == s.buddyCursor && s.focus == focusBuddies && row.selectable() {
 			text = selectedStyle.Render(text + strings.Repeat(" ", max(0, width-lipgloss.Width(text))))
 		}
 		lines = append(lines, text)
@@ -1161,14 +1268,14 @@ func (s *sessionModel) tabsView(x, y, width int) string {
 	if full := strings.Join(tabs, sep); lipgloss.Width(full) <= width {
 		for i, tab := range tabs {
 			w := s.windows[i]
-			s.addZone(x, y, lipgloss.Width(tab), func() { s.clickWindow(w) })
+			s.addZone(x, y, lipgloss.Width(tab), func() tea.Cmd { return s.clickWindow(w) })
 			x += lipgloss.Width(tab) + lipgloss.Width(sep)
 		}
 		return full
 	}
 
 	next := s.windows[(s.active+1)%len(s.windows)]
-	s.addZone(x, y, width, func() { s.clickWindow(next) })
+	s.addZone(x, y, width, func() tea.Cmd { return s.clickWindow(next) })
 	title := s.current().title
 	pos := dimStyle.Render(fmt.Sprintf("%d/%d ", s.active+1, len(s.windows)))
 	return fit(width,
@@ -1180,7 +1287,7 @@ func (s *sessionModel) tabsView(x, y, width int) string {
 // subLine describes the active window under the tabs.
 func (s *sessionModel) subLine(w *window) string {
 	if w.scroll > 0 {
-		return fmt.Sprintf("scrolled up %d lines (PgDn to return)", w.scroll)
+		return fmt.Sprintf("scrolled up %d lines (PgDn or click to return)", w.scroll)
 	}
 	switch w.kind {
 	case winChat:
@@ -1201,6 +1308,33 @@ func (s *sessionModel) subLine(w *window) string {
 		}
 	}
 	return ""
+}
+
+// subLineView renders the line under the window tabs at screen position x,
+// y: a description of the window, with links to actions on it at the right.
+func (s *sessionModel) subLineView(w *window, x, y, width int) string {
+	text := dimStyle.Render(s.subLine(w))
+	if w.scroll > 0 {
+		s.addZone(x, y, min(width, lipgloss.Width(text)), func() tea.Cmd {
+			w.scroll = 0
+			return nil
+		})
+		return truncate(text, width)
+	}
+	var links []action
+	for _, it := range s.windowActions(w) {
+		if it.link != "" {
+			links = append(links, action{text: linkStyle.Render(it.link), run: it.run})
+		}
+	}
+	sep := dimStyle.Render(" · ")
+	linksWidth := barWidth(links, sep)
+	if len(links) == 0 || linksWidth+1 > width {
+		return truncate(text, width)
+	}
+	text = truncate(text, width-linksWidth-1)
+	gap := width - lipgloss.Width(text) - linksWidth
+	return text + strings.Repeat(" ", gap) + s.actionBar(x+width-linksWidth, y, linksWidth, sep, links)
 }
 
 // windowView renders the active window at screen position x, y.
@@ -1237,7 +1371,7 @@ func (s *sessionModel) windowView(lay layout, x, y, width, height int) string {
 
 	switch headRows {
 	case 2:
-		lines = append([]string{s.tabsView(x, y, width), truncate(dimStyle.Render(s.subLine(w)), width)}, lines...)
+		lines = append([]string{s.tabsView(x, y, width), s.subLineView(w, x, y+1, width)}, lines...)
 	case 1:
 		var scrolled string
 		if w.scroll > 0 {
@@ -1281,10 +1415,12 @@ func (s *sessionModel) editorView(width, height int) string {
 func (s *sessionModel) inputView(width int) string {
 	w := s.current()
 	var prompt, name string
-	switch w.kind {
-	case winIM:
+	switch {
+	case s.prompt != nil:
+		prompt = " " + s.prompt.label + "> "
+	case w.kind == winIM:
 		prompt, name = " to "+w.peer+"> ", w.peer
-	case winChat:
+	case w.kind == winChat:
 		prompt, name = " "+w.title+"> ", w.title
 	default:
 		prompt = " command> "
@@ -1305,22 +1441,4 @@ func (s *sessionModel) inputView(width int) string {
 	}
 	s.input.Width = max(1, width-lipgloss.Width(prompt)-1)
 	return prompt + s.input.View()
-}
-
-// helpLines are the key help line, from longest to shortest.
-func (s *sessionModel) helpLines() []string {
-	if s.focus == focusBuddies {
-		return []string{
-			" ↑/↓: select • Enter: IM • i: info • w/W: warn/anon • b: block • d: remove • Tab: input",
-			" Enter: IM • i: info • w: warn • b: block • d: remove • Tab: input",
-			" Enter/i/w/b/d • Tab: input",
-			" Tab: input",
-		}
-	}
-	return []string{
-		" Tab: buddy list • Ctrl+N/P: switch window • Ctrl+W: close • PgUp/PgDn: scroll • /help • Ctrl+C: quit",
-		" Tab: buddies • ^N/^P: windows • ^W: close • /help",
-		" Tab: buddies • /help",
-		" /help",
-	}
 }

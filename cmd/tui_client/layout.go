@@ -1,6 +1,12 @@
 package main
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+)
 
 // Breakpoints of the session screen. As the terminal shrinks, parts of the
 // screen are abbreviated and then dropped, down to a single line of the
@@ -59,7 +65,7 @@ func newLayout(width, height int) layout {
 // zone is a clickable part of a screen line.
 type zone struct {
 	x, y, width int
-	click       func()
+	click       func() tea.Cmd
 }
 
 // fit returns the first of candidates, from longest to shortest, that fits in
@@ -90,4 +96,22 @@ func padLines(lines []string, n int) []string {
 		return append(make([]string, pad), lines...)
 	}
 	return lines
+}
+
+// overlay draws box over view with its top left corner at column x, line y,
+// such as a menu dropping down over the screen.
+func overlay(view, box string, x, y int) string {
+	lines := strings.Split(view, "\n")
+	for i, b := range strings.Split(box, "\n") {
+		if y+i >= len(lines) {
+			break
+		}
+		line := lines[y+i]
+		left := ansi.Truncate(line, x, "")
+		left += strings.Repeat(" ", max(0, x-ansi.StringWidth(left)))
+		right := ansi.TruncateLeft(line, x+ansi.StringWidth(b), "")
+		// reset the style around the box, so neither bleeds into the other
+		lines[y+i] = left + ansi.ResetStyle + b + ansi.ResetStyle + right
+	}
+	return strings.Join(lines, "\n")
 }

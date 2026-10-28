@@ -22,6 +22,10 @@ var (
 	selfStyle         = lipgloss.NewStyle().Bold(true).Foreground(selfColor)
 	peerStyle         = lipgloss.NewStyle().Bold(true).Foreground(accentColor)
 	groupStyle        = lipgloss.NewStyle().Bold(true)
+	// linkStyle and keyStyle mark clickable labels and the keys of the key
+	// help, which are clickable too.
+	linkStyle = lipgloss.NewStyle().Foreground(accentColor)
+	keyStyle  = lipgloss.NewStyle().Foreground(accentColor)
 
 	boxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
