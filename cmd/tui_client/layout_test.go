@@ -185,3 +185,31 @@ func TestSessionView_click(t *testing.T) {
 		})
 	}
 }
+
+func TestLoginView_box(t *testing.T) {
+	tests := []struct {
+		name          string
+		width, height int
+		wantBox       bool
+	}{
+		{name: "default terminal", width: 80, height: 24, wantBox: true},
+		{name: "a little smaller than default", width: 78, height: 20, wantBox: true},
+		{name: "half size", width: 40, height: 14, wantBox: true},
+		{name: "smallest box", width: 34, height: 12, wantBox: true},
+		{name: "too short for the box", width: 80, height: 9},
+		{name: "too narrow for the box", width: 24, height: 24},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config{}
+			for i := range 3 {
+				cfg.Accounts = append(cfg.Accounts, account{Server: "127.0.0.1:5190", ScreenName: fmt.Sprintf("user%d", i), Password: "x"})
+			}
+			l := newLoginModel(cfg, nil, loginArgs{})
+			l.status = "Sign on failed: connection refused"
+			view := l.view(tt.width, tt.height)
+			assertFits(t, view, tt.width, tt.height)
+			assert.Equal(t, tt.wantBox, strings.Contains(view, "╭"), view)
+		})
+	}
+}
