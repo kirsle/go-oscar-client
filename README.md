@@ -11,27 +11,39 @@ too.
 
 It has also been tested to work on the [NINA.chat OSCAR server](https://nina.chat).
 
-## A.I. Disclaimer: This project was vibe coded
+## Disclaimer: This project is written using A.I.
 
 This codebase was originally developed inside a fork of open-oscar-server for
 compatibility with that project's codebase, and this code is 100% vibe coded
 using Claude Code.
 
-The repository author ([@Kirsle on GitHub](https://github.com/kirsle)) generated
-this code to scratch his own itch, which is to support building a modern AIM
-chatbot written in Go. Kirsle has a long history in the instant messenger chatbot
+I am [@Kirsle on GitHub](https://github.com/kirsle) and I generated
+this code to scratch my own itch, which is to support building a modern AIM
+chatbot written in Go. I have a long history in the instant messenger chatbot
 space, having authored many chatbots that ran on AOL Instant Messenger as well as
-MSN and Yahoo! Messengers in the early 2000's, and he also created the chatbot
+MSN and Yahoo! Messengers in the early 2000's, and I also created the chatbot
 scripting language [RiveScript](https://www.rivescript.com) to drive those bots.
 
 In 2026, there was not an existing OSCAR client module for Go but there were
 open source OSCAR servers written in Go which provided the base inspiration for
 this project.
 
-OSCAR is an extremely old and outdated protocol, insecure by modern standards
-with MD5 hashing used in its authentication workflow. Kirsle did not want to
-learn the ins and outs of the OSCAR protocol the hard way to manually write a
-client library, so this one was A.I. generated.
+OSCAR is a very old and outdated protocol -- AOL Instant Messenger shut down
+their servers for good in 2017, and the underlying protocol is insecure by modern
+standards, using MD5 hashing as part of the authentication workflow. I did not
+want to learn all of the ins and outs of the OSCAR protocol and write this
+library the hard way, so I vibe coded the initial version with Claude Code.
+
+**Under Active Maintenance:** After the initial vibe coded base, I have been
+fixing bugs and adding features, such as SSL support and making the terminal
+UI responsive to very small windows, and mouse support. These updates are
+also largely written by A.I. but overseen by me for correctness and design.
+This is how we software engineers work nowadays at our day job.
+
+I don't normally use A.I. in my personal projects because I still love the art
+of code, but again, OSCAR was low on my list of things to learn about when my
+main goal is to write a chatbot. Having classic AIM supported for that bot
+would be fun to have.
 
 If you do not want to use an A.I. generated project, then do not use this one.
 If you have an interest in OSCAR clients, it would be greatly appreciated if
