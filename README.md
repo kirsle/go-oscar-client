@@ -39,9 +39,12 @@ The status screen and /help command:
 
 ## Disclaimer: This project is written using A.I.
 
-This codebase was originally developed inside a fork of open-oscar-server for
-compatibility with that project's codebase, and this code is 100% vibe coded
-using Claude Code.
+This codebase was originally developed inside a fork of [open-oscar-server](https://github.com/mk6i/open-oscar-server)
+for compatibility with that project's codebase, and this code is 100% vibe
+coded using Claude Code. The upstream project didn't want it
+([#221](https://github.com/mk6i/open-oscar-server/pull/221))
+because it was vibe coded -- which is totally fair! -- so I moved it to its
+own separate project.
 
 I am [@Kirsle on GitHub](https://github.com/kirsle) and I generated
 this code to scratch my own itch, which is to support building a modern AIM
