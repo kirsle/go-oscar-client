@@ -526,6 +526,13 @@ func (c *Client) IsBlocked(screenName string) bool {
 	return c.fb.isDenied(screenName)
 }
 
+// IsBuddy reports whether screenName is on the user's buddy list.
+func (c *Client) IsBuddy(screenName string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.fb.buddyItems(screenName)) > 0
+}
+
 // AddBuddy adds a buddy to a group of the buddy list, creating the group if
 // it doesn't exist. An empty group means DefaultBuddyGroup.
 func (c *Client) AddBuddy(ctx context.Context, group, screenName string) error {

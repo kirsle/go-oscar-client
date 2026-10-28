@@ -1042,7 +1042,9 @@ func (s *sessionModel) windowView(width, height int) string {
 			if info.Away {
 				sub += " (away)"
 			}
-		} else {
+		} else if s.client.IsBuddy(w.peer) {
+			// presence is only tracked for buddies, so a non-buddy's
+			// status is unknown
 			sub = w.peer + " is offline"
 		}
 	}
